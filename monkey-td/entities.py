@@ -41,30 +41,43 @@ from config import (
 def _path_bonus(tower_type: str, tier_a: int, tier_b: int, tier_c: int, stat: str) -> float:
     defs = TOWER_PATH_UPGRADES[tower_type]
     s = 0.0
-    total_tiers = tier_a + tier_b + tier_c
     for letter, tier in (("a", tier_a), ("b", tier_b), ("c", tier_c)):
         _, st, val = defs[letter]
         if st == stat:
             s += val * float(tier)
-    # Small universal spillover so each path still helps multiple stats.
-    # Primary path stat remains the strongest source of scaling.
-    if stat == "damage":
-        s += 0.006 * total_tiers
-    elif stat == "range":
-        s += 0.008 * total_tiers
-    elif stat == "firerate":
-        s += 0.005 * total_tiers
-    elif stat == "splash":
-        s += 0.010 * total_tiers
-    elif stat == "slow":
-        s += 0.004 * total_tiers
-    elif stat == "farm_mult":
-        s += 0.010 * total_tiers
-    elif stat == "farm_mult_b":
-        s += 0.006 * total_tiers
-    elif stat == "farm_flat":
-        s += 1.5 * total_tiers
     return s
+
+
+_TOWER_MODIFIER_ACCESS: dict[str, set[str]] = {
+    # Certain towers intentionally lack some special-modifier capabilities.
+    "dart": {"lead", "camo", "flying"},
+    "cannon": {"lead", "flying"},
+    "ice": {"camo", "regen"},
+    "sniper": {"lead", "camo", "flying"},
+    "boom": {"lead", "regen"},
+    "super": {"lead", "camo", "flying", "regen"},
+}
+
+
+def _single_modifier_for_tiers(
+    tower_type: str, tier_a: int, tier_b: int, tier_c: int
+) -> str | None:
+    """Only one special modifier can be active at a time per tower."""
+    allowed = _TOWER_MODIFIER_ACCESS.get(tower_type, set())
+    if not allowed:
+        return None
+    m = max(tier_a, tier_b, tier_c)
+    if m <= 0:
+        return None
+    if tier_a == m and m >= 2 and "lead" in allowed:
+        return "lead"
+    if tier_b == m and m >= 4 and "flying" in allowed:
+        return "flying"
+    if tier_b == m and m >= 2 and "camo" in allowed:
+        return "camo"
+    if tier_c == m and m >= 2 and "regen" in allowed:
+        return "regen"
+    return None
 
 
 @dataclass
@@ -115,7 +128,7 @@ class Enemy:
         if self.kind == "boss":
             self.max_layers = 1
         else:
-            base_layers = {"banana": 2, "fast": 2, "armored": 3}.get(self.kind, 1)
+            base_layers = {"banana": 2, "fast": 2, "armored": 3, "raider": 4, "moab": 5}.get(self.kind, 1)
             if self.lead:
                 base_layers += 1
             if self.fortified:
@@ -257,6 +270,9 @@ class MonkeyTower:
     def effective_range(self, global_range_pct: float) -> float:
         b = self.base()
         r = float(b["range"]) * (1.0 + self._pb("range")) * (1.0 + global_range_pct)
+        if self.dominant_path() == "b" and self.dominant_tier() >= 4:
+            # Path mastery (range path): clearer identity at higher tiers.
+            r *= 1.1
         if self.paragon:
             r *= PARAGON_RANGE_MULT
         return r
@@ -264,6 +280,9 @@ class MonkeyTower:
     def effective_damage(self, global_damage_pct: float) -> float:
         b = self.base()
         d = float(b["damage"]) * (1.0 + self._pb("damage")) * (1.0 + global_damage_pct)
+        if self.dominant_path() == "a" and self.dominant_tier() >= 4:
+            # Path mastery (power path): extra impact once specialized.
+            d *= 1.08
         if self.paragon:
             d *= PARAGON_DAMAGE_MULT
         return d
@@ -273,6 +292,9 @@ class MonkeyTower:
         fr = self._pb("firerate")
         cd_mult = max(0.48, 1.0 - min(0.44, fr))
         cd = float(b["cooldown"]) * cd_mult
+        if self.dominant_path() == "c" and self.dominant_tier() >= 4:
+            # Path mastery (speed path): tighter cadence.
+            cd *= 0.9
         cd_i = max(8, int(cd))
         if self.paragon:
             cd_i = max(5, int(cd_i / PARAGON_ATTACK_SPEED_MULT))
@@ -332,44 +354,38 @@ class MonkeyTower:
         return {"a": self.tier_a, "b": self.tier_b, "c": self.tier_c}[p]
 
     def can_detect_camo(self) -> bool:
-        """Camo bloons need upgrades (BTD-style vision paths)."""
+        """Single-modifier model: only dominant path grants one special."""
         if self.paragon:
             return True
-        tt = self.tower_type
-        tb = self.tier_b
-        if tt == "dart" and tb >= 2:
-            return True
-        if tt == "cannon" and tb >= 2:
-            return True
-        if tt == "ice" and tb >= 2:
-            return True
-        if tt == "sniper" and tb >= 1:
-            return True
-        if tt == "boom" and tb >= 3:
-            return True
-        if tt == "super" and tb >= 2:
-            return True
-        return False
+        return (
+            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
+            == "camo"
+        )
 
     def can_detect_flying(self) -> bool:
-        """Flying bloons require anti-air path upgrades."""
+        """Single-modifier model: only one special can be active."""
         if self.paragon:
             return True
-        tt = self.tower_type
-        ta, tb, tc = self.tier_a, self.tier_b, self.tier_c
-        if tt == "dart" and tb >= 4:
+        return (
+            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
+            == "flying"
+        )
+
+    def can_hit_lead(self) -> bool:
+        if self.paragon:
             return True
-        if tt == "cannon" and tc >= 3:
+        return (
+            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
+            == "lead"
+        )
+
+    def can_hit_regen(self) -> bool:
+        if self.paragon:
             return True
-        if tt == "ice" and tb >= 4:
-            return True
-        if tt == "sniper" and tb >= 3:
-            return True
-        if tt == "boom" and ta >= 4:
-            return True
-        if tt == "super" and ta >= 2:
-            return True
-        return False
+        return (
+            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
+            == "regen"
+        )
 
     def display_name(self) -> str:
         """BTD-style full tower name from the leading upgrade path."""
@@ -458,35 +474,25 @@ class MonkeyTower:
 def lead_damage_multiplier(
     tower_type: str, tier_a: int, _tier_b: int, tier_c: int, damage_type: str
 ) -> float:
-    """Damage dealt to lead / metal bloons (sharp & cold need the right upgrades)."""
-    if damage_type in ("explosive", "ballistic", "plasma"):
-        return 1.0
-    if tower_type == "dart" and damage_type == "sharp":
-        return 1.0 if tier_a >= 4 else 0.0
-    if tower_type == "boom" and damage_type == "sharp":
-        return 1.0 if tier_a >= 4 else 0.0
-    if tower_type == "ice" and damage_type == "cold":
-        return 1.0 if tier_c >= 3 else 0.0
-    return 0.0
+    """Single-modifier model: lead comes only from dominant A path."""
+    _ = tower_type, damage_type, tier_c
+    return (
+        1.0
+        if _single_modifier_for_tiers(tower_type, tier_a, _tier_b, tier_c) == "lead"
+        else 0.0
+    )
 
 
 def regen_damage_multiplier(
     tower_type: str, tier_a: int, tier_b: int, tier_c: int, _damage_type: str
 ) -> float:
-    """Regen immunity is locked behind specific path investments by tower."""
-    if tower_type == "dart":
-        return 1.0 if tier_b >= 3 else 0.0
-    if tower_type == "cannon":
-        return 1.0 if tier_c >= 2 else 0.0
-    if tower_type == "ice":
-        return 1.0 if tier_a >= 2 else 0.0
-    if tower_type == "sniper":
-        return 1.0 if tier_a >= 2 else 0.0
-    if tower_type == "boom":
-        return 1.0 if tier_b >= 2 else 0.0
-    if tower_type == "super":
-        return 1.0 if tier_b >= 1 else 0.0
-    return 0.0
+    """Single-modifier model: regen comes only from dominant C path."""
+    _ = tower_type, _damage_type
+    return (
+        1.0
+        if _single_modifier_for_tiers(tower_type, tier_a, tier_b, tier_c) == "regen"
+        else 0.0
+    )
 
 
 def damage_vs_enemy(
@@ -568,10 +574,12 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
             if not e.alive:
                 continue
             px, py = getattr(e, "_px", 0.0), getattr(e, "_py", 0.0)
-            d = math.hypot(px - tx, py - ty)
+            dx, dy = px - tx, py - ty
+            d2 = dx * dx + dy * dy
             hit_r = e.radius + 8.0
-            if d < hit_r and d < best_d:
-                best_d = d
+            hit_r2 = hit_r * hit_r
+            if d2 < hit_r2 and d2 < best_d:
+                best_d = d2
                 best = e
         if best is not None:
             d = damage_vs_enemy(
@@ -593,7 +601,9 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
             if not e.alive:
                 continue
             px, py = getattr(e, "_px", 0.0), getattr(e, "_py", 0.0)
-            if math.hypot(px - tx, py - ty) <= proj.splash_radius + e.radius:
+            dx, dy = px - tx, py - ty
+            hit_r = proj.splash_radius + e.radius
+            if dx * dx + dy * dy <= hit_r * hit_r:
                 d = damage_vs_enemy(
                     proj.damage,
                     e,

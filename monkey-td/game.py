@@ -30,7 +30,9 @@ from config import (
     PATH_HALF_WIDTH,
     PLAY_HEIGHT,
     PLAY_WIDTH,
+    SIDEBAR_WIDTH,
     STARTING_CASH,
+    START_FULLSCREEN,
     TITLE,
     WAVE_ROUND_BONUS_BASE,
     WAVE_ROUND_BONUS_PER_WAVE,
@@ -55,7 +57,7 @@ from entities import (
     find_target,
 )
 from maps import MAP_DEFINITIONS, build_waypoints, map_count, map_grass
-from path import distance_point_to_path, pos_at_distance, total_length
+from path import distance_point_to_path, segment_lengths, total_length
 from waves import WaveController, make_enemy
 from ui import (
     HUD_SPEED_CHOICES,
@@ -92,7 +94,8 @@ RunMode = Literal["normal", "sandbox"]
 class Game:
     def __init__(self) -> None:
         pygame.init()
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        self.fullscreen = START_FULLSCREEN
+        self.screen = self._create_display()
         pygame.display.set_caption(TITLE)
         self.clock = pygame.time.Clock()
         self.font, self.font_small, self.font_title = init_fonts()
@@ -106,6 +109,8 @@ class Game:
         self.map_index = 0
         self.path_waypoints: list[tuple[float, float]] = []
         self.path_len = 1.0
+        self.path_seg_lens: list[float] = []
+        self.path_cum_lens: list[float] = [0.0]
         self.grass_color = COLOR_GRASS
 
         self.base_hp = BASE_MAX_HP
@@ -142,6 +147,12 @@ class Game:
         self.map_index = index
         self.path_waypoints = build_waypoints(index)
         self.path_len = total_length(self.path_waypoints)
+        self.path_seg_lens, _ = segment_lengths(self.path_waypoints)
+        self.path_cum_lens = [0.0]
+        run = 0.0
+        for ln in self.path_seg_lens:
+            run += ln
+            self.path_cum_lens.append(run)
         self.grass_color = map_grass(index)
         self.reset_round_state()
 
@@ -174,6 +185,19 @@ class Game:
         else:
             self.cash = int(STARTING_CASH * float(d["starting_cash_mult"]))
 
+    def _create_display(self) -> pygame.Surface:
+        def _set_mode(flags: int) -> pygame.Surface:
+            try:
+                return pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags, vsync=1)
+            except TypeError:
+                return pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
+
+        if self.fullscreen:
+            # True fullscreen (exclusive) to avoid OS title/window bar.
+            return _set_mode(pygame.FULLSCREEN)
+        # Windowed mode keeps scaling support.
+        return _set_mode(pygame.SCALED)
+
     def return_to_title(self) -> None:
         """Map selection screen: clears run state so the player picks a map again."""
         self.state = "map_select"
@@ -182,6 +206,8 @@ class Game:
         self.map_index = 0
         self.path_waypoints = []
         self.path_len = 1.0
+        self.path_seg_lens = []
+        self.path_cum_lens = [0.0]
         self.grass_color = COLOR_GRASS
         self.base_hp = BASE_MAX_HP
         self.cash = 0
@@ -236,14 +262,43 @@ class Game:
             dmul *= s.ally_damage_buff_mult()
         return min(rmul, 1.38), min(dmul, 1.44)
 
+    def _set_enemy_position(self, e: Enemy) -> None:
+        if len(self.path_waypoints) < 2 or not self.path_seg_lens:
+            if self.path_waypoints:
+                e._px = self.path_waypoints[0][0]
+                e._py = self.path_waypoints[0][1]
+            else:
+                e._px, e._py = 0.0, 0.0
+            e._sort_d = e.distance
+            e._seg_i = 0
+            return
+        d = max(0.0, min(e.distance, self.path_len))
+        i = int(getattr(e, "_seg_i", 0))
+        max_i = len(self.path_seg_lens) - 1
+        if i < 0:
+            i = 0
+        if i > max_i:
+            i = max_i
+        # Walk forward/backward from previous segment index (usually tiny movement).
+        while i < max_i and d > self.path_cum_lens[i + 1]:
+            i += 1
+        while i > 0 and d < self.path_cum_lens[i]:
+            i -= 1
+        x0, y0 = self.path_waypoints[i]
+        x1, y1 = self.path_waypoints[i + 1]
+        ln = self.path_seg_lens[i] if self.path_seg_lens[i] > 1e-6 else 1.0
+        local_d = d - self.path_cum_lens[i]
+        t = local_d / ln
+        e._px = x0 + (x1 - x0) * t
+        e._py = y0 + (y1 - y0) * t
+        e._sort_d = d
+        e._seg_i = i
+
     def sync_enemy_positions(self) -> None:
         for e in self.enemies:
             if not e.alive:
                 continue
-            x, y, _ = pos_at_distance(self.path_waypoints, e.distance)
-            e._px = x
-            e._py = y
-            e._sort_d = e.distance
+            self._set_enemy_position(e)
 
     def try_place_tower(self, mx: float, my: float) -> None:
         if self.selected_place_type is None:
@@ -281,6 +336,16 @@ class Game:
         new: list = []
         for e in self.enemies:
             if e.hp <= 0 and not e.leaked:
+                if e.kind == "moab":
+                    # MOAB-style pop: release a burst of children.
+                    for _ in range(6):
+                        c = make_enemy("fast", self.wave_hp_mult, self.wave_speed_mult, 0, boss_decade=0)
+                        c.distance = e.distance
+                        new.append(c)
+                    for _ in range(4):
+                        c = make_enemy("armored", self.wave_hp_mult, self.wave_speed_mult, 0, boss_decade=0)
+                        c.distance = e.distance
+                        new.append(c)
                 if self.run_mode == "sandbox":
                     continue
                 dset = DIFFICULTY_SETTINGS[self.difficulty]
@@ -322,8 +387,7 @@ class Game:
                         boss_decade=bd,
                     )
                 )
-
-        self.sync_enemy_positions()
+                self._set_enemy_position(self.enemies[-1])
 
         alive_proj: list[Projectile] = []
         for p in self.projectiles:
@@ -355,14 +419,34 @@ class Game:
         self.enemies = [e for e in self.enemies if e.alive]
 
         self.sync_enemy_positions()
+        support_towers = [s for s in self.towers if s.is_support()]
+        gr = self.global_range_pct()
+        support_data: list[tuple[float, float, float, float, float]] = []
+        for s in support_towers:
+            support_data.append(
+                (
+                    s.x,
+                    s.y,
+                    s.effective_range(gr),
+                    s.ally_range_buff_mult(),
+                    s.ally_damage_buff_mult(),
+                )
+            )
         for t in self.towers:
             if t.is_farm() or t.is_support():
                 continue
             if t.cooldown > 0:
                 t.cooldown -= 1
                 continue
-            rng = t.effective_range(self.global_range_pct())
-            srm, sdm = self.support_buff_multipliers(t)
+            rng = t.effective_range(gr)
+            srm, sdm = 1.0, 1.0
+            for sx, sy, srng, srmul, sdmul in support_data:
+                dx, dy = sx - t.x, sy - t.y
+                if dx * dx + dy * dy <= srng * srng:
+                    srm *= srmul
+                    sdm *= sdmul
+            srm = min(srm, 1.38)
+            sdm = min(sdm, 1.44)
             rng *= srm
             tgt = find_target(
                 t.x,
@@ -622,7 +706,6 @@ class Game:
         draw_text(self.screen, self.font_small, "BASE", int(bx) - 28, int(by) - 8)
 
     def draw_entities(self) -> None:
-        self.sync_enemy_positions()
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -838,6 +921,9 @@ class Game:
     def handle_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
             pygame.event.post(pygame.event.Event(pygame.QUIT))
+        if key == pygame.K_F11:
+            self.fullscreen = not self.fullscreen
+            self.screen = self._create_display()
         if self.state == "map_select":
             if key == pygame.K_1:
                 self.difficulty = "easy"
@@ -917,7 +1003,7 @@ class Game:
     def run(self) -> None:
         running = True
         while running:
-            elapsed_ms = self.clock.tick(FPS)
+            elapsed_ms = self.clock.tick_busy_loop(FPS)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False

@@ -1,15 +1,39 @@
 """Constants, balance, path waypoints, and wave definitions."""
 
 from __future__ import annotations
+import ctypes
+import os
 
-# Display
-WINDOW_WIDTH = 1100
-WINDOW_HEIGHT = 700
+def _detect_display_size() -> tuple[int, int]:
+    """Best-effort monitor resolution detection with safe fallback."""
+    # Windows (primary monitor)
+    if os.name == "nt":
+        try:
+            # Prevent DPI scaling virtualization so reported resolution matches
+            # the real fullscreen backbuffer size.
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            w = int(user32.GetSystemMetrics(0))
+            h = int(user32.GetSystemMetrics(1))
+            if w >= 1024 and h >= 600:
+                return w, h
+        except Exception:
+            pass
+    # Fallback
+    return 1366, 768
+
+
+# Display (auto-adapts to current computer settings)
+WINDOW_WIDTH, WINDOW_HEIGHT = _detect_display_size()
 FPS = 60
 TITLE = "Monkey vs Bananas Tower Defense"
+START_FULLSCREEN = True
 
 # World layout (playfield excludes UI sidebar)
-SIDEBAR_WIDTH = 260
+SIDEBAR_WIDTH = max(300, min(460, int(WINDOW_WIDTH * 0.24)))
 PLAY_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH
 PLAY_HEIGHT = WINDOW_HEIGHT
 
@@ -33,7 +57,7 @@ COLOR_BOSS = (139, 90, 43)
 COLOR_UI_ACCENT = (90, 160, 255)
 
 # Economy (tuned for 40-wave runs + 6-tier paths)
-STARTING_CASH = 980
+STARTING_CASH = 1000
 # Cash each time you clear a wave (before next wave), scaled by wave number (wn = 0-based wave you cleared).
 WAVE_ROUND_BONUS_BASE = 58
 WAVE_ROUND_BONUS_PER_WAVE = 5
@@ -41,6 +65,8 @@ KILL_REWARD_BANANA = 19
 KILL_REWARD_FAST = 27
 KILL_REWARD_ARMORED = 33
 KILL_REWARD_BOSS = 380
+KILL_REWARD_RAIDER = 58
+KILL_REWARD_MOAB = 140
 
 # Tower type keys and base stats (place_cost, range, damage, cooldown_frames, special)
 TOWER_TYPES: dict[str, dict] = {
@@ -571,7 +597,7 @@ BOSS_PER_DECADE_REGEN_MULT = 0.04
 BOSS_PER_DECADE_SPEED_CAP = 1.28
 
 # Wave definitions: spawn_interval_frames, entries: (kind, count)
-# kind: "banana" | "fast" | "armored" | "boss"
+# kind: "banana" | "fast" | "armored" | "raider" | "moab" | "boss"
 
 
 def _build_waves_raw() -> list[dict]:
@@ -595,24 +621,28 @@ def _build_waves_raw() -> list[dict]:
                 ("banana", min(52, 22 + w + w // 2)),
                 ("fast", min(36, 10 + w + w // 3)),
                 ("armored", 6 + w // 2),
+                ("raider", max(1, (w - 20) // 3)),
             ]
         elif w <= 36:
             entries = [
                 ("banana", min(55, 28 + w)),
                 ("fast", min(40, 14 + w // 2)),
                 ("armored", 10 + (w - 28)),
+                ("raider", 2 + (w - 28) // 2),
             ]
         elif w < 40:
             entries = [
                 ("banana", 38),
                 ("fast", 30),
                 ("armored", 20 + (w - 37)),
+                ("raider", 4 + (w - 37)),
             ]
         else:
             entries = [
                 ("banana", 28),
                 ("fast", 26),
                 ("armored", 18),
+                ("raider", 8),
             ]
 
         # Mega-boss every 10th wave from wave 20 onward (20, 30, 40, ...).
@@ -642,6 +672,8 @@ def _build_waves_raw() -> list[dict]:
             entries.append(("fast", 3, ENEMY_FLAG_LEAD | ENEMY_FLAG_REGEN))
         if w >= 38:
             entries.append(("armored", 2, ENEMY_FLAG_CAMO | ENEMY_FLAG_LEAD | ENEMY_FLAG_FORTIFIED))
+        if w >= 22:
+            entries.append(("moab", 1 + (w - 22) // 8))
 
         out.append({"interval": interval, "entries": entries})
     return out
@@ -685,7 +717,7 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
         "label": "Easy",
         "enemy_hp": 0.84,
         "enemy_speed": 0.93,
-        "starting_cash_mult": 1.12,
+        "starting_cash_mult": 1.4,
         "leak_mult": 0.85,
         "reward_mult": 1.06,
         "wave_bonus_mult": 1.1,
@@ -694,7 +726,7 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
         "label": "Medium",
         "enemy_hp": 1.0,
         "enemy_speed": 1.0,
-        "starting_cash_mult": 1.0,
+        "starting_cash_mult": 1.2,
         "leak_mult": 1.0,
         "reward_mult": 1.0,
         "wave_bonus_mult": 1.0,
@@ -703,7 +735,7 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
         "label": "Hard",
         "enemy_hp": 1.16,
         "enemy_speed": 1.07,
-        "starting_cash_mult": 0.9,
+        "starting_cash_mult": 1.0,
         "leak_mult": 1.12,
         "reward_mult": 0.93,
         "wave_bonus_mult": 0.9,
@@ -712,7 +744,7 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
         "label": "Impossible",
         "enemy_hp": 1.34,
         "enemy_speed": 1.14,
-        "starting_cash_mult": 0.75,
+        "starting_cash_mult": 0.85,
         "leak_mult": 1.28,
         "reward_mult": 0.86,
         "wave_bonus_mult": 0.82,
@@ -724,6 +756,8 @@ ENEMY_STATS: dict[str, dict] = {
     "banana": {"hp": 31, "speed": 1.1, "leak": 2, "radius": 12, "reward": KILL_REWARD_BANANA},
     "fast": {"hp": 23, "speed": 1.6, "leak": 2, "radius": 10, "reward": KILL_REWARD_FAST},
     "armored": {"hp": 74, "speed": 0.9, "leak": 4, "radius": 13, "reward": KILL_REWARD_ARMORED},
+    "raider": {"hp": 165, "speed": 1.32, "leak": 8, "radius": 16, "reward": KILL_REWARD_RAIDER},
+    "moab": {"hp": 980, "speed": 0.72, "leak": 14, "radius": 28, "reward": KILL_REWARD_MOAB},
     "boss": {"hp": 1650, "speed": 0.5, "leak": 20, "radius": 42, "reward": KILL_REWARD_BOSS},
 }
 

@@ -461,69 +461,144 @@ def _draw_path_outfit(
     r = max(8, radius)
     bright = _lerp_color(accent, (255, 255, 255), 0.25)
     dark = _lerp_color(accent, (28, 26, 24), 0.35)
+    core = _lerp_color(accent, (255, 240, 180), 0.45)
+    # Tier intensity affects outfit complexity and line thickness.
+    thick = 2 if dt >= 4 else 1
+
     if tower_key == "dart":
         if path_key == "a":
-            pygame.draw.polygon(screen, bright, ((cx - 7, cy - r + 3), (cx, cy - r - 7), (cx + 7, cy - r + 3)))
+            # Damage outfit: plated helmet + shoulder pads
+            pygame.draw.polygon(screen, bright, ((cx - 10, cy - r + 5), (cx, cy - r - 10), (cx + 10, cy - r + 5)))
+            pygame.draw.rect(screen, dark, (cx - 12, cy - 2, 6, 8), border_radius=2)
+            pygame.draw.rect(screen, dark, (cx + 6, cy - 2, 6, 8), border_radius=2)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 3), 6, 2)
+            # Vision outfit: goggles + lens mount
+            pygame.draw.rect(screen, bright, (cx - 9, cy - 4, 18, 7), border_radius=3)
+            pygame.draw.circle(screen, core, (cx - 4, cy - 1), 2)
+            pygame.draw.circle(screen, core, (cx + 4, cy - 1), 2)
+            pygame.draw.line(screen, bright, (cx, cy - r + 2), (cx, cy - 8), thick)
         else:
-            pygame.draw.arc(screen, bright, (cx - r - 6, cy - r - 4, 2 * r + 12, 2 * r + 8), 0.3, 2.8, 2)
+            # Speed outfit: scarf trails
+            pygame.draw.arc(screen, bright, (cx - r - 8, cy - r - 6, 2 * r + 16, 2 * r + 12), 0.25, 2.85, thick)
+            pygame.draw.arc(screen, core, (cx - r - 4, cy - r - 2, 2 * r + 8, 2 * r + 4), 0.4, 2.7, 1)
     elif tower_key == "cannon":
         if path_key == "a":
-            pygame.draw.rect(screen, bright, (cx + r - 2, cy - 4, 10, 8), border_radius=2)
+            # Siege outfit: reinforced barrel and braces
+            pygame.draw.rect(screen, dark, (cx + r - 4, cy - 5, 14, 10), border_radius=2)
+            pygame.draw.rect(screen, bright, (cx - r + 1, cy + 4, 7, 4), border_radius=1)
+            pygame.draw.rect(screen, bright, (cx + r - 8, cy + 4, 7, 4), border_radius=1)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy), max(6, r // 3), 2)
+            # Artillery outfit: range ring + calibrator
+            pygame.draw.circle(screen, bright, (cx, cy), max(7, r // 2), thick)
+            pygame.draw.circle(screen, core, (cx, cy), max(3, r // 5))
         else:
-            pygame.draw.rect(screen, dark, (cx - r // 2, cy - r // 2 - 2, r, 5), border_radius=2)
+            # Reload outfit: ammo belt
+            pygame.draw.rect(screen, dark, (cx - r // 2 - 2, cy - r // 2 - 3, r + 4, 6), border_radius=2)
+            pygame.draw.line(screen, core, (cx - r // 2, cy - r // 2), (cx + r // 2, cy - r // 2), 1)
     elif tower_key == "ice":
         if path_key == "a":
-            pygame.draw.polygon(screen, bright, ((cx - 6, cy - r - 1), (cx, cy - r - 10), (cx + 6, cy - r - 1)))
+            # Frost crown
+            pygame.draw.polygon(screen, bright, ((cx - 8, cy - r), (cx - 2, cy - r - 10), (cx + 2, cy - r - 10), (cx + 8, cy - r)))
+            pygame.draw.circle(screen, core, (cx, cy - r - 6), 2)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 5, 2)
+            # Cryo visor
+            pygame.draw.rect(screen, bright, (cx - 9, cy - 5, 18, 7), border_radius=3)
+            pygame.draw.line(screen, core, (cx - 7, cy - 2), (cx + 7, cy - 2), 1)
         else:
-            pygame.draw.line(screen, bright, (cx - r + 2, cy + 2), (cx + r - 2, cy + 2), 2)
+            # Shard mantle
+            pygame.draw.polygon(screen, bright, ((cx - r + 3, cy + 2), (cx, cy + r // 2 + 5), (cx + r - 3, cy + 2)), 0)
     elif tower_key == "sniper":
         if path_key == "a":
-            pygame.draw.rect(screen, bright, (cx - 8, cy - r - 2, 16, 4), border_radius=2)
+            # Marksman helmet
+            pygame.draw.rect(screen, bright, (cx - 10, cy - r - 1, 20, 5), border_radius=2)
+            pygame.draw.line(screen, dark, (cx, cy - r - 1), (cx, cy - 9), thick)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 1), 6, 2)
+            # Long-range optic array
+            pygame.draw.circle(screen, bright, (cx, cy - r + 1), 7, thick)
+            pygame.draw.circle(screen, core, (cx, cy - r + 1), 3)
+            pygame.draw.line(screen, bright, (cx - 12, cy - r + 1), (cx + 12, cy - r + 1), 1)
         else:
-            pygame.draw.line(screen, bright, (cx - 5, cy + r - 3), (cx + 7, cy + r - 7), 2)
+            # Rapid-fire sling rig
+            pygame.draw.line(screen, bright, (cx - 7, cy + r - 3), (cx + 10, cy + r - 8), thick)
+            pygame.draw.circle(screen, core, (cx + 12, cy + r - 9), 2)
     elif tower_key == "boom":
         if path_key == "a":
-            pygame.draw.polygon(screen, bright, ((cx - 8, cy - r + 4), (cx, cy - r - 6), (cx + 8, cy - r + 4)))
+            # Glaive crest
+            pygame.draw.polygon(screen, bright, ((cx - 9, cy - r + 5), (cx, cy - r - 8), (cx + 9, cy - r + 5)))
+            pygame.draw.circle(screen, core, (cx, cy - r + 1), 2)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy), r + 3, 1)
+            # Arc guide ring
+            pygame.draw.circle(screen, bright, (cx, cy), r + 4, 1)
+            pygame.draw.arc(screen, core, (cx - r - 7, cy - r - 7, 2 * r + 14, 2 * r + 14), 3.8, 5.6, thick)
         else:
-            pygame.draw.arc(screen, bright, (cx - r - 8, cy - r - 6, 2 * r + 16, 2 * r + 12), 3.3, 5.6, 2)
+            # Velocity fins
+            pygame.draw.arc(screen, bright, (cx - r - 8, cy - r - 6, 2 * r + 16, 2 * r + 12), 3.3, 5.6, thick)
+            pygame.draw.line(screen, core, (cx - r - 2, cy + 2), (cx + r + 3, cy - 2), 1)
     elif tower_key == "farm":
         if path_key == "a":
-            pygame.draw.rect(screen, bright, (cx - 8, cy - 1, 16, 8), border_radius=2)
+            # Harvest armor
+            pygame.draw.rect(screen, bright, (cx - 9, cy - 2, 18, 9), border_radius=2)
+            pygame.draw.line(screen, dark, (cx - 7, cy + 2), (cx + 7, cy + 2), 1)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - 4), 5, 2)
+            # Fertility beacon
+            pygame.draw.circle(screen, bright, (cx, cy - 4), 6, thick)
+            pygame.draw.circle(screen, core, (cx, cy - 4), 2)
         else:
-            pygame.draw.line(screen, bright, (cx - 10, cy + 4), (cx + 10, cy + 4), 2)
+            # Storage belt
+            pygame.draw.line(screen, bright, (cx - 10, cy + 5), (cx + 10, cy + 5), thick)
+            pygame.draw.rect(screen, core, (cx - 4, cy + 3, 8, 4), border_radius=1)
     elif tower_key == "village":
         if path_key == "a":
-            pygame.draw.rect(screen, bright, (cx - 6, cy - r + 2, 12, 6), border_radius=2)
+            # Bannered battlement
+            pygame.draw.rect(screen, bright, (cx - 7, cy - r + 2, 14, 6), border_radius=2)
+            pygame.draw.polygon(screen, core, ((cx + 7, cy - r + 2), (cx + 13, cy - r + 4), (cx + 7, cy - r + 6)))
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 3), 6, 2)
+            # Signal dish
+            pygame.draw.circle(screen, bright, (cx, cy - r + 3), 7, thick)
+            pygame.draw.line(screen, core, (cx, cy - r + 3), (cx, cy - r + 9), 1)
         else:
-            pygame.draw.line(screen, bright, (cx - 7, cy + r - 3), (cx + 7, cy + r - 3), 2)
+            # Logistics stripe
+            pygame.draw.line(screen, bright, (cx - 8, cy + r - 3), (cx + 8, cy + r - 3), thick)
+            pygame.draw.line(screen, core, (cx - 8, cy + r - 6), (cx + 8, cy + r - 6), 1)
     elif tower_key == "workshop":
         if path_key == "a":
-            pygame.draw.polygon(screen, bright, ((cx - 8, cy - r + 5), (cx, cy - r - 5), (cx + 8, cy - r + 5)))
+            # Power saw helm
+            pygame.draw.polygon(screen, bright, ((cx - 9, cy - r + 5), (cx, cy - r - 7), (cx + 9, cy - r + 5)))
+            pygame.draw.circle(screen, core, (cx, cy - r), 2)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 5, 2)
+            # Sensor rig
+            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 6, thick)
+            pygame.draw.line(screen, core, (cx - 8, cy - r + 2), (cx + 8, cy - r + 2), 1)
         else:
-            pygame.draw.rect(screen, bright, (cx - 8, cy + r - 8, 16, 5), border_radius=2)
+            # Conveyor pack
+            pygame.draw.rect(screen, bright, (cx - 9, cy + r - 8, 18, 6), border_radius=2)
+            pygame.draw.rect(screen, core, (cx - 4, cy + r - 7, 8, 4), border_radius=1)
     elif tower_key == "super":
         if path_key == "a":
-            pygame.draw.polygon(screen, bright, ((cx - 9, cy - r + 5), (cx, cy - r - 8), (cx + 9, cy - r + 5)))
+            # Crowned battle helm
+            pygame.draw.polygon(screen, bright, ((cx - 10, cy - r + 5), (cx, cy - r - 10), (cx + 10, cy - r + 5)))
+            pygame.draw.circle(screen, core, (cx, cy - r - 3), 2)
         elif path_key == "b":
-            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 7, 2)
+            # Oracle halo
+            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 8, thick)
+            pygame.draw.circle(screen, core, (cx, cy - r + 2), 3)
+            pygame.draw.arc(screen, bright, (cx - r - 12, cy - r - 10, 2 * r + 24, 16), 0.25, 2.9, 1)
         else:
-            pygame.draw.arc(screen, bright, (cx - r - 6, cy - r - 4, 2 * r + 12, 2 * r + 10), 0.4, 2.7, 2)
+            # Hyper cape
+            pygame.draw.arc(screen, bright, (cx - r - 8, cy - r - 6, 2 * r + 16, 2 * r + 12), 0.35, 2.8, thick)
+            pygame.draw.polygon(screen, dark, ((cx - 6, cy + r - 2), (cx + 6, cy + r - 2), (cx, cy + r + 10)))
+
+    # High-tier signature flair for stronger outfit shifts.
+    if dt >= 4:
+        pygame.draw.circle(screen, _lerp_color(accent, (255, 255, 255), 0.35), (cx, cy), r + 4, 1)
+    if dt >= 5:
+        pygame.draw.circle(screen, _lerp_color(accent, (255, 230, 160), 0.55), (cx, cy), r + 7, 1)
+    if dt >= 6:
+        for i in range(3):
+            ang = 2.2 + i * 2.1
+            ox = int((r + 10) * math.cos(ang))
+            oy = int((r + 10) * math.sin(ang))
+            pygame.draw.circle(screen, core, (cx + ox, cy + oy), 2)
 
 
 def draw_tower_icon(
@@ -608,6 +683,25 @@ def draw_enemy_sprite(screen: pygame.Surface, enemy: Enemy, x: int, y: int) -> N
             ((x - 10, y - 5), (x - 2, y - 9), (x + 6, y - 7), (x + 10, y), (x + 6, y + 7), (x - 2, y + 9), (x - 10, y + 5)),
             2,
         )
+    elif enemy.kind == "raider":
+        pygame.draw.polygon(
+            screen,
+            (255, 126, 70),
+            ((x - 16, y), (x - 7, y - 10), (x + 8, y - 9), (x + 16, y), (x + 8, y + 9), (x - 7, y + 10)),
+        )
+        pygame.draw.polygon(
+            screen,
+            (255, 190, 120),
+            ((x - 10, y), (x - 3, y - 6), (x + 5, y - 5), (x + 10, y), (x + 5, y + 5), (x - 3, y + 6)),
+            2,
+        )
+        pygame.draw.line(screen, (255, 222, 160), (x - 14, y - 8), (x - 22, y - 12), 2)
+        pygame.draw.line(screen, (255, 222, 160), (x - 14, y + 8), (x - 22, y + 12), 2)
+    elif enemy.kind == "moab":
+        pygame.draw.ellipse(screen, (84, 128, 176), (x - 30, y - 17, 60, 34))
+        pygame.draw.ellipse(screen, (132, 188, 236), (x - 24, y - 10, 48, 20), 2)
+        pygame.draw.polygon(screen, (70, 104, 144), ((x - 28, y), (x - 38, y - 8), (x - 38, y + 8)))
+        pygame.draw.line(screen, (184, 220, 250), (x - 10, y), (x + 12, y), 2)
     else:
         pygame.draw.ellipse(screen, (112, 78, 58), (x - 22, y - 16, 44, 32))
         pygame.draw.rect(screen, (138, 97, 72), (x - 16, y - 10, 32, 20), border_radius=5)
@@ -810,8 +904,8 @@ def draw_tower_shop(
 def upgrade_row_rect(y_start: int, index: int, scroll_px: int = 0) -> pygame.Rect:
     """index 0,1,2 for paths A,B,C."""
     x0 = PLAY_WIDTH + 10
-    y0 = y_start + index * 42 - scroll_px
-    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 36)
+    y0 = y_start + index * 52 - scroll_px
+    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 48)
 
 
 # Align with draw_upgrade_panel tower block (must match game.handle_click upgrade hits).
@@ -822,7 +916,7 @@ UPGRADE_PATHS_ROW_Y = UPGRADE_PANEL_Y0 + 52
 
 def paragon_upgrade_rect(paths_row_y: int = UPGRADE_PATHS_ROW_Y, scroll_px: int = 0) -> pygame.Rect:
     x0 = PLAY_WIDTH + 10
-    y = paths_row_y + 3 * 42 + 12 - scroll_px
+    y = paths_row_y + 3 * 52 + 12 - scroll_px
     return pygame.Rect(x0, y, SIDEBAR_WIDTH - 20, 44)
 
 
@@ -894,16 +988,66 @@ def draw_upgrade_panel(
         text_w,
         (110, 150, 175),
     )
+
+    base = tower.base()
+    dmg_pct = max(0.0, (tower.effective_damage(0.0) / max(1.0, float(base["damage"])) - 1.0) * 100.0) if float(base["damage"]) > 0 else 0.0
+    rng_pct = max(0.0, (tower.effective_range(0.0) / max(1.0, float(base["range"])) - 1.0) * 100.0) if float(base["range"]) > 0 else 0.0
+    fr_pct = max(0.0, (float(base["cooldown"]) / max(1.0, float(tower.effective_cooldown())) - 1.0) * 100.0)
+    draw_text_fit(
+        screen,
+        font_small,
+        f"Upg bonus: dmg +{int(dmg_pct)}%  rng +{int(rng_pct)}%  fire +{int(fr_pct)}%",
+        text_x,
+        y0 + 46 - scroll_px,
+        text_w,
+        (150, 198, 220),
+    )
+    mod_hits: list[str] = []
+    if tower.can_detect_camo():
+        mod_hits.append("camo")
+    if tower.can_detect_flying():
+        mod_hits.append("flying")
+    if tower.can_hit_lead():
+        mod_hits.append("lead")
+    if tower.can_hit_regen():
+        mod_hits.append("regen")
+    mods_txt = "none" if not mod_hits else ", ".join(mod_hits)
+    draw_text_fit(
+        screen,
+        font_small,
+        f"Modifiers hit ({len(mod_hits)}): {mods_txt}",
+        text_x,
+        y0 + 60 - scroll_px,
+        text_w,
+        (158, 188, 158),
+    )
     paths = TOWER_PATH_UPGRADES[tower.tower_type]
     ca, cb, cc = tower.upgrade_cost_a(), tower.upgrade_cost_b(), tower.upgrade_cost_c()
-    row_y = y0 + 60
+    stat_label = {
+        "damage": "Damage",
+        "range": "Range",
+        "firerate": "Fire rate",
+        "splash": "Splash",
+        "slow": "Slow",
+        "farm_mult": "Farm mult",
+        "farm_mult_b": "Farm bonus",
+        "farm_flat": "Farm flat",
+    }
+
+    def effect_text(stat: str, val: float) -> str:
+        if stat == "farm_flat":
+            return f"{stat_label.get(stat, stat)} +{int(val)} / tier"
+        if stat == "slow":
+            return f"{stat_label.get(stat, stat)} +{int(val * 100)}% / tier"
+        return f"{stat_label.get(stat, stat)} +{val * 100:.1f}% / tier"
+    row_y = y0 + 90
     rows = [
-        ("A", PATH_LANE_NAMES[0], paths["a"][0], tower.tier_a, ca, 0),
-        ("B", PATH_LANE_NAMES[1], paths["b"][0], tower.tier_b, cb, 1),
-        ("C", PATH_LANE_NAMES[2], paths["c"][0], tower.tier_c, cc, 2),
+        ("A", PATH_LANE_NAMES[0], paths["a"][0], paths["a"][1], float(paths["a"][2]), tower.tier_a, ca, 0),
+        ("B", PATH_LANE_NAMES[1], paths["b"][0], paths["b"][1], float(paths["b"][2]), tower.tier_b, cb, 1),
+        ("C", PATH_LANE_NAMES[2], paths["c"][0], paths["c"][1], float(paths["c"][2]), tower.tier_c, cc, 2),
     ]
     mx = tower.max_tier()
-    for key, lane, name, tier, cost, ri in rows:
+    for key, lane, name, stat, stat_val, tier, cost, ri in rows:
         rr = upgrade_row_rect(row_y, ri, scroll_px)
         maxed = tier >= mx
         locked = not maxed and cost is None
@@ -925,13 +1069,22 @@ def draw_upgrade_panel(
         hot = (150, 210, 255) if can_buy or maxed else ((100, 90, 110) if locked else (120, 100, 100))
         draw_text(screen, font_small, f"[{key}]", rr.x + 8, rr.y + 8, hot)
         draw_text(screen, font_small, f"{lane}", rr.x + 32, rr.y + 5, (130, 160, 190))
-        draw_text_fit(screen, font_small, name, rr.x + 32, rr.y + 16, rr.width - 130)
+        draw_text_fit(screen, font_small, name, rr.x + 32, rr.y + 15, rr.width - 130)
+        draw_text_fit(
+            screen,
+            font_small,
+            effect_text(stat, stat_val),
+            rr.x + 32,
+            rr.y + 29,
+            rr.width - 130,
+            (150, 170, 188),
+        )
         price_col = (200, 210, 220) if can_buy or maxed else ((160, 140, 180) if locked else (180, 130, 130))
-        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.x + 116, rr.y + 8, price_col)
+        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.x + 116, rr.y + 7, price_col)
         price_x = rr.right - 10 - font_small.size(price)[0]
-        draw_text(screen, font_small, price, price_x, rr.y + 8, price_col)
+        draw_text(screen, font_small, price, price_x, rr.y + 7, price_col)
         if cost is not None and cash < cost:
-            draw_text(screen, font_small, "!", rr.right - 14, rr.y + 8, (230, 120, 120))
+            draw_text(screen, font_small, "!", rr.right - 14, rr.y + 7, (230, 120, 120))
 
     pr = paragon_upgrade_rect(row_y, scroll_px)
     if tower.paragon:
