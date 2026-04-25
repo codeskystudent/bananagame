@@ -21,6 +21,7 @@ from config import (
     ENDLESS_REWARD_PER_WAVE,
     ENDLESS_SPEED_CAP,
     ENDLESS_SPEED_PER_WAVE,
+    ENEMY_FLAG_FLYING,
     POST_WAVE_10_HP_RAMP,
     POST_WAVE_10_SPEED_RAMP,
     ENEMY_STATS,
@@ -58,6 +59,7 @@ from path import distance_point_to_path, pos_at_distance, total_length
 from waves import WaveController, make_enemy
 from ui import (
     HUD_SPEED_CHOICES,
+    UPGRADE_PANEL_Y0,
     UPGRADE_PATHS_ROW_Y,
     difficulty_button_rect,
     draw_hud,
@@ -66,8 +68,10 @@ from ui import (
     draw_play_border,
     draw_sidebar_bg,
     draw_text,
+    draw_text_fit,
     draw_tower_shop,
     draw_upgrade_panel,
+    draw_enemy_sprite,
     draw_wave_break,
     init_fonts,
     map_button_rect,
@@ -97,6 +101,7 @@ class Game:
         self.state: State = "map_select"
         self.paused = False
         self.game_speed = 1
+        self.auto_wave_skip = False
 
         self.map_index = 0
         self.path_waypoints: list[tuple[float, float]] = []
@@ -119,6 +124,7 @@ class Game:
         self.global_tiers: dict[str, int] = {"range": 0, "damage": 0, "income": 0}
         self.difficulty: str = "medium"
         self.run_mode: RunMode = "normal"
+        self.sidebar_scroll = 0
         self.sandbox_spawn_flags: dict[str, bool] = {
             "camo": False,
             "lead": False,
@@ -159,6 +165,8 @@ class Game:
         self.last_wave_round_bonus = 0
         self.last_farm_income = 0
         self.sim_accum_ms = 0.0
+        self.sidebar_scroll = 0
+        self.auto_wave_skip = False
         d = DIFFICULTY_SETTINGS[self.difficulty]
         if self.run_mode == "sandbox":
             self.cash = 999999
@@ -192,6 +200,8 @@ class Game:
         self.last_wave_round_bonus = 0
         self.last_farm_income = 0
         self.sim_accum_ms = 0.0
+        self.sidebar_scroll = 0
+        self.auto_wave_skip = False
 
     def reset_game(self) -> None:
         self.return_to_title()
@@ -290,13 +300,25 @@ class Game:
             popped = self.waves.pop_spawn()
             if popped:
                 kind, flags = popped
+                spawn_flags = flags
+                if self.difficulty == "impossible":
+                    wn = self.current_wave_wn + 1
+                    if kind == "fast" and wn >= 8:
+                        spawn_flags |= ENEMY_FLAG_FLYING
+                    if kind == "banana" and wn >= 14:
+                        # Some non-boss bloons gain flight in Impossible.
+                        spawn_flags |= ENEMY_FLAG_FLYING
+                    if kind == "armored" and wn >= 18:
+                        spawn_flags |= ENEMY_FLAG_FLYING
+                    if kind == "boss" and wn >= 20:
+                        spawn_flags |= ENEMY_FLAG_FLYING
                 bd = (self.current_wave_wn + 1) // 10 if kind == "boss" else 0
                 self.enemies.append(
                     make_enemy(
                         kind,
                         self.wave_hp_mult,
                         self.wave_speed_mult,
-                        flags,
+                        spawn_flags,
                         boss_decade=bd,
                     )
                 )
@@ -342,7 +364,14 @@ class Game:
             rng = t.effective_range(self.global_range_pct())
             srm, sdm = self.support_buff_multipliers(t)
             rng *= srm
-            tgt = find_target(t.x, t.y, rng, self.enemies, t.can_detect_camo())
+            tgt = find_target(
+                t.x,
+                t.y,
+                rng,
+                self.enemies,
+                t.can_detect_camo(),
+                t.can_detect_flying(),
+            )
             if tgt is None:
                 continue
             ex = getattr(tgt, "_px", 0.0)
@@ -509,6 +538,9 @@ class Game:
             return
         if self.state == "lost":
             return
+        if self.state == "wave_break" and self.auto_wave_skip and not self.paused:
+            self.start_next_wave()
+            return
         if self.paused:
             return
         if self.state != "playing":
@@ -564,6 +596,18 @@ class Game:
         for _ in range(max(1, count)):
             self.enemies.append(make_enemy(kind, 1.0, 1.0, flags, boss_decade=0))
 
+    def max_sidebar_scroll(self) -> int:
+        # Scroll only the build list region (above upgrades panel).
+        content_top = 82
+        view_bottom = UPGRADE_PANEL_Y0 - 8
+        view_h = max(1, view_bottom - content_top)
+        build_bottom = tower_button_rect(len(TOWER_SHOP_ORDER) - 1, 0).bottom + 8
+        content_h = max(0, build_bottom - content_top)
+        return max(0, content_h - view_h)
+
+    def clamp_sidebar_scroll(self) -> None:
+        self.sidebar_scroll = max(0, min(self.sidebar_scroll, self.max_sidebar_scroll()))
+
     def draw_path(self) -> None:
         s = self.screen
         if len(self.path_waypoints) < 2:
@@ -583,39 +627,9 @@ class Game:
             if not e.alive:
                 continue
             px, py = getattr(e, "_px", 0), getattr(e, "_py", 0)
+            draw_enemy_sprite(self.screen, e, int(px), int(py))
             if e.kind == "boss":
-                pygame.draw.circle(self.screen, COLOR_BOSS, (int(px), int(py)), int(e.radius))
-                pygame.draw.circle(self.screen, (90, 60, 30), (int(px) - 12, int(py) - 8), 8)
-                pygame.draw.circle(self.screen, (90, 60, 30), (int(px) + 12, int(py) - 8), 8)
-                draw_text(self.screen, self.font_small, "BOSS", int(px) - 22, int(py) - 36)
-                if e.camo:
-                    pygame.draw.circle(
-                        self.screen, (140, 90, 200), (int(px), int(py)), int(e.radius) + 5, 3
-                    )
-                if e.fortified:
-                    pygame.draw.circle(
-                        self.screen, (220, 220, 235), (int(px), int(py)), int(e.radius) + 8, 2
-                    )
-            else:
-                col = COLOR_BANANA
-                if e.kind == "fast":
-                    col = (255, 200, 40)
-                elif e.kind == "armored":
-                    col = (200, 170, 50)
-                if e.lead:
-                    col = (140, 145, 155) if e.kind == "banana" else (160, 158, 150)
-                    if e.kind == "fast":
-                        col = (175, 170, 160)
-                    elif e.kind == "armored":
-                        col = (120, 125, 130)
-                er = pygame.Rect(int(px) - 14, int(py) - 8, 28, 16)
-                pygame.draw.ellipse(self.screen, col, er)
-                if e.fortified:
-                    pygame.draw.ellipse(self.screen, (230, 235, 245), er, 2)
-                if e.camo:
-                    pygame.draw.ellipse(self.screen, (130, 80, 170), er, 2)
-                if e.regen:
-                    pygame.draw.circle(self.screen, (80, 220, 120), (int(px) + 10, int(py) - 10), 4)
+                draw_text(self.screen, self.font_small, "BOSS", int(px) - 22, int(py) - 38)
         for t in self.towers:
             draw_monkey_tower_on_map(self.screen, t, t is self.selected_tower)
             if t is self.selected_tower:
@@ -671,30 +685,57 @@ class Game:
             wave_disp,
             wave_state,
             self.game_speed,
+            auto_wave_skip=self.auto_wave_skip,
             sandbox=self.run_mode == "sandbox",
             sandbox_flags_label=self.sandbox_flags_label(),
         )
         draw_play_border(self.screen)
         draw_sidebar_bg(self.screen)
-        draw_text(self.screen, self.font_title, "Monkey TD", PLAY_WIDTH + 12, 12, (120, 185, 255))
-        draw_text(
+        sx = PLAY_WIDTH + 12
+        sw = SIDEBAR_WIDTH - 24
+        draw_text_fit(self.screen, self.font_title, "Monkey TD", sx, 10, sw, (120, 185, 255))
+        draw_text_fit(
             self.screen,
             self.font_small,
             MAP_DEFINITIONS[self.map_index]["name"],
-            PLAY_WIDTH + 12,
+            sx,
             34,
+            sw,
             (140, 160, 185),
         )
-        draw_text(
+        draw_text_fit(
             self.screen,
             self.font_small,
-            f"{DIFFICULTY_SETTINGS[self.difficulty]['label']}  ·  {self.run_mode.capitalize()}",
-            PLAY_WIDTH + 12,
-            52,
+            str(DIFFICULTY_SETTINGS[self.difficulty]["label"]),
+            sx,
+            50,
+            sw,
             (120, 175, 140),
         )
-        draw_tower_shop(self.screen, self.font, self.font_small, self.selected_place_type)
-        draw_upgrade_panel(self.screen, self.font, self.font_small, self.selected_tower, self.cash)
+        draw_text_fit(
+            self.screen,
+            self.font_small,
+            f"Mode: {self.run_mode.capitalize()}",
+            sx,
+            66,
+            sw,
+            (150, 188, 220),
+        )
+        draw_tower_shop(
+            self.screen,
+            self.font,
+            self.font_small,
+            self.selected_place_type,
+            self.sidebar_scroll,
+        )
+        draw_upgrade_panel(
+            self.screen,
+            self.font,
+            self.font_small,
+            self.selected_tower,
+            self.cash,
+            0,
+        )
 
         if self.state == "wave_break":
             draw_wave_break(
@@ -707,6 +748,7 @@ class Game:
                 self.global_tiers,
                 self.last_wave_round_bonus,
                 self.last_farm_income,
+                self.auto_wave_skip,
             )
             r = next_wave_button_screen_rect()
             pygame.draw.rect(self.screen, (52, 108, 188), r, border_radius=10)
@@ -736,7 +778,7 @@ class Game:
 
     def handle_click(self, mx: int, my: int) -> None:
         if self.state == "map_select":
-            for i, dkey in enumerate(("easy", "medium", "hard")):
+            for i, dkey in enumerate(("easy", "medium", "hard", "impossible")):
                 if difficulty_button_rect(i).collidepoint(mx, my):
                     self.difficulty = dkey
                     return
@@ -756,7 +798,7 @@ class Game:
                     return
         if mx >= PLAY_WIDTH:
             for i, key in enumerate(TOWER_SHOP_ORDER):
-                if tower_button_rect(i).collidepoint(mx, my):
+                if tower_button_rect(i, self.sidebar_scroll).collidepoint(mx, my):
                     self.selected_place_type = key
                     self.selected_tower = None
                     return
@@ -765,15 +807,15 @@ class Game:
                 and not self.paused
                 and self.selected_tower is not None
             ):
-                if sell_tower_button_rect().collidepoint(mx, my):
+                if sell_tower_button_rect(0).collidepoint(mx, my):
                     self.try_sell_selected_tower()
                     return
                 row_y = UPGRADE_PATHS_ROW_Y
                 for path, idx in (("a", 0), ("b", 1), ("c", 2)):
-                    if upgrade_row_rect(row_y, idx).collidepoint(mx, my):
+                    if upgrade_row_rect(row_y, idx, 0).collidepoint(mx, my):
                         self.try_upgrade(path)
                         return
-                if paragon_upgrade_rect(row_y).collidepoint(mx, my):
+                if paragon_upgrade_rect(row_y, 0).collidepoint(mx, my):
                     self.try_paragon()
                     return
             return
@@ -803,6 +845,8 @@ class Game:
                 self.difficulty = "medium"
             elif key == pygame.K_3:
                 self.difficulty = "hard"
+            elif key == pygame.K_4:
+                self.difficulty = "impossible"
             elif key == pygame.K_m:
                 self.run_mode = "sandbox" if self.run_mode == "normal" else "normal"
         elif self.state == "wave_break" and key in (
@@ -831,6 +875,8 @@ class Game:
             except ValueError:
                 si = 0
             self.game_speed = HUD_SPEED_CHOICES[(si + 1) % len(HUD_SPEED_CHOICES)]
+        if key == pygame.K_u and self.state != "map_select":
+            self.auto_wave_skip = not self.auto_wave_skip
         if key == pygame.K_a and self.selected_tower:
             self.try_upgrade("a")
         if key == pygame.K_b and self.selected_tower:
@@ -877,6 +923,11 @@ class Game:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self.handle_click(event.pos[0], event.pos[1])
+                elif event.type == pygame.MOUSEWHEEL:
+                    mx, my = pygame.mouse.get_pos()
+                    if mx >= PLAY_WIDTH and 82 <= my <= UPGRADE_PANEL_Y0 - 8:
+                        self.sidebar_scroll -= event.y * 28
+                        self.clamp_sidebar_scroll()
                 elif event.type == pygame.KEYDOWN:
                     self.handle_key(event.key)
 

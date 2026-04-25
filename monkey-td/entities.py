@@ -83,6 +83,7 @@ class Enemy:
     lead: bool = False
     fortified: bool = False
     regen: bool = False
+    flying: bool = False
     regen_per_frame: float = 0.0
     boss_decade: int = 0
     layers: int = 1
@@ -350,6 +351,26 @@ class MonkeyTower:
             return True
         return False
 
+    def can_detect_flying(self) -> bool:
+        """Flying bloons require anti-air path upgrades."""
+        if self.paragon:
+            return True
+        tt = self.tower_type
+        ta, tb, tc = self.tier_a, self.tier_b, self.tier_c
+        if tt == "dart" and tb >= 4:
+            return True
+        if tt == "cannon" and tc >= 3:
+            return True
+        if tt == "ice" and tb >= 4:
+            return True
+        if tt == "sniper" and tb >= 3:
+            return True
+        if tt == "boom" and ta >= 4:
+            return True
+        if tt == "super" and ta >= 2:
+            return True
+        return False
+
     def display_name(self) -> str:
         """BTD-style full tower name from the leading upgrade path."""
         if self.paragon:
@@ -503,6 +524,8 @@ def enemy_reward_multiplier(e: Enemy) -> float:
         m *= 1.1
     if e.regen:
         m *= 1.12
+    if e.flying:
+        m *= 1.18
     return m
 
 
@@ -512,6 +535,7 @@ def find_target(
     rng: float,
     enemies: list[Enemy],
     see_camo: bool = True,
+    see_flying: bool = True,
 ) -> Enemy | None:
     best: Enemy | None = None
     best_d_along = -1.0
@@ -520,6 +544,8 @@ def find_target(
         if not e.alive:
             continue
         if e.camo and not see_camo:
+            continue
+        if e.flying and not see_flying:
             continue
         d_along = getattr(e, "_sort_d", 0.0)
         px, py = getattr(e, "_px", 0.0), getattr(e, "_py", 0.0)

@@ -27,16 +27,16 @@ from config import (
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
-from entities import MonkeyTower
+from entities import Enemy, MonkeyTower
 from maps import MAP_DEFINITIONS
 
 
 def difficulty_button_rect(index: int) -> pygame.Rect:
     """Easy / Medium / Hard row above bottom margin."""
-    w = 210
+    w = 200
     h = 46
-    gap = 14
-    total = 3 * w + 2 * gap
+    gap = 12
+    total = 4 * w + 3 * gap
     x0 = (WINDOW_WIDTH - total) // 2
     y = WINDOW_HEIGHT - 78
     return pygame.Rect(x0 + index * (w + gap), y, w, h)
@@ -96,7 +96,7 @@ def draw_map_select(
         draw_text(screen, font, m["name"], r.x + 58, r.y + 12)
         draw_text(screen, font_small, m["subtitle"], r.x + 58, r.y + 36, (170, 185, 200))
 
-    order = ("easy", "medium", "hard")
+    order = ("easy", "medium", "hard", "impossible")
     for i, dk in enumerate(order):
         r = difficulty_button_rect(i)
         sel = selected_difficulty == dk
@@ -114,7 +114,8 @@ def draw_map_select(
             border_radius=10,
         )
         label = str(DIFFICULTY_SETTINGS[dk]["label"])
-        draw_text(screen, font, label, r.x + 72, r.y + 13)
+        lx = r.x + (r.width - font.size(label)[0]) // 2
+        draw_text(screen, font, label, lx, r.y + 13)
     mode_order = ("normal", "sandbox")
     mode_labels = {"normal": "Normal", "sandbox": "Sandbox"}
     for i, mk in enumerate(mode_order):
@@ -137,7 +138,7 @@ def draw_map_select(
     draw_text(
         screen,
         font_small,
-        "[1] [2] [3] difficulty  ·  [M] mode  ·  [R] title  ·  Esc quit",
+        "[1] [2] [3] [4] difficulty  ·  [M] mode  ·  [R] title  ·  Esc quit",
         36,
         WINDOW_HEIGHT - 26,
         (130, 145, 165),
@@ -444,6 +445,87 @@ def _draw_path_silhouette(
             )
 
 
+def _draw_path_outfit(
+    screen: pygame.Surface,
+    cx: int,
+    cy: int,
+    radius: int,
+    tower_key: str,
+    path_key: str,
+    dt: int,
+    accent: tuple[int, int, int],
+) -> None:
+    """Tower-specific costume overlays per dominant path (A/B/C)."""
+    if dt < 1:
+        return
+    r = max(8, radius)
+    bright = _lerp_color(accent, (255, 255, 255), 0.25)
+    dark = _lerp_color(accent, (28, 26, 24), 0.35)
+    if tower_key == "dart":
+        if path_key == "a":
+            pygame.draw.polygon(screen, bright, ((cx - 7, cy - r + 3), (cx, cy - r - 7), (cx + 7, cy - r + 3)))
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 3), 6, 2)
+        else:
+            pygame.draw.arc(screen, bright, (cx - r - 6, cy - r - 4, 2 * r + 12, 2 * r + 8), 0.3, 2.8, 2)
+    elif tower_key == "cannon":
+        if path_key == "a":
+            pygame.draw.rect(screen, bright, (cx + r - 2, cy - 4, 10, 8), border_radius=2)
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy), max(6, r // 3), 2)
+        else:
+            pygame.draw.rect(screen, dark, (cx - r // 2, cy - r // 2 - 2, r, 5), border_radius=2)
+    elif tower_key == "ice":
+        if path_key == "a":
+            pygame.draw.polygon(screen, bright, ((cx - 6, cy - r - 1), (cx, cy - r - 10), (cx + 6, cy - r - 1)))
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 5, 2)
+        else:
+            pygame.draw.line(screen, bright, (cx - r + 2, cy + 2), (cx + r - 2, cy + 2), 2)
+    elif tower_key == "sniper":
+        if path_key == "a":
+            pygame.draw.rect(screen, bright, (cx - 8, cy - r - 2, 16, 4), border_radius=2)
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 1), 6, 2)
+        else:
+            pygame.draw.line(screen, bright, (cx - 5, cy + r - 3), (cx + 7, cy + r - 7), 2)
+    elif tower_key == "boom":
+        if path_key == "a":
+            pygame.draw.polygon(screen, bright, ((cx - 8, cy - r + 4), (cx, cy - r - 6), (cx + 8, cy - r + 4)))
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy), r + 3, 1)
+        else:
+            pygame.draw.arc(screen, bright, (cx - r - 8, cy - r - 6, 2 * r + 16, 2 * r + 12), 3.3, 5.6, 2)
+    elif tower_key == "farm":
+        if path_key == "a":
+            pygame.draw.rect(screen, bright, (cx - 8, cy - 1, 16, 8), border_radius=2)
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - 4), 5, 2)
+        else:
+            pygame.draw.line(screen, bright, (cx - 10, cy + 4), (cx + 10, cy + 4), 2)
+    elif tower_key == "village":
+        if path_key == "a":
+            pygame.draw.rect(screen, bright, (cx - 6, cy - r + 2, 12, 6), border_radius=2)
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 3), 6, 2)
+        else:
+            pygame.draw.line(screen, bright, (cx - 7, cy + r - 3), (cx + 7, cy + r - 3), 2)
+    elif tower_key == "workshop":
+        if path_key == "a":
+            pygame.draw.polygon(screen, bright, ((cx - 8, cy - r + 5), (cx, cy - r - 5), (cx + 8, cy - r + 5)))
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 5, 2)
+        else:
+            pygame.draw.rect(screen, bright, (cx - 8, cy + r - 8, 16, 5), border_radius=2)
+    elif tower_key == "super":
+        if path_key == "a":
+            pygame.draw.polygon(screen, bright, ((cx - 9, cy - r + 5), (cx, cy - r - 8), (cx + 9, cy - r + 5)))
+        elif path_key == "b":
+            pygame.draw.circle(screen, bright, (cx, cy - r + 2), 7, 2)
+        else:
+            pygame.draw.arc(screen, bright, (cx - r - 6, cy - r - 4, 2 * r + 12, 2 * r + 10), 0.4, 2.7, 2)
+
+
 def draw_tower_icon(
     screen: pygame.Surface,
     cx: int,
@@ -466,6 +548,7 @@ def draw_tower_icon(
 
     if dp is not None and dt > 0:
         _draw_path_silhouette(screen, cx, cy, radius, dp, dt, accent)
+        _draw_path_outfit(screen, cx, cy, radius, tower_key, dp, dt, accent)
         pygame.draw.circle(screen, accent, (cx, cy), radius + 2, 2)
         if dt >= 2:
             pygame.draw.circle(screen, _lerp_color(accent, (255, 255, 240), 0.3), (cx, cy), radius + 4, 1)
@@ -503,6 +586,52 @@ def draw_tower_icon(
         pygame.draw.circle(screen, (255, 252, 235), (cx, cy), radius + 3, 1)
 
 
+def draw_enemy_sprite(screen: pygame.Surface, enemy: Enemy, x: int, y: int) -> None:
+    """Distinct enemy sprite per type with stacked modifier badges."""
+    if enemy.kind == "banana":
+        body = [(x - 13, y), (x - 7, y - 8), (x + 6, y - 7), (x + 12, y), (x + 6, y + 7), (x - 7, y + 8)]
+        pygame.draw.polygon(screen, (242, 214, 82), body)
+        pygame.draw.polygon(screen, (215, 188, 62), body, 2)
+    elif enemy.kind == "fast":
+        pygame.draw.polygon(screen, (255, 195, 70), ((x - 14, y), (x + 8, y - 8), (x + 12, y), (x + 8, y + 8)))
+        pygame.draw.line(screen, (255, 226, 120), (x - 12, y - 6), (x - 19, y - 10), 2)
+        pygame.draw.line(screen, (255, 226, 120), (x - 12, y + 6), (x - 19, y + 10), 2)
+    elif enemy.kind == "armored":
+        pygame.draw.polygon(
+            screen,
+            (130, 138, 148),
+            ((x - 13, y - 7), (x - 5, y - 12), (x + 7, y - 10), (x + 14, y), (x + 7, y + 10), (x - 5, y + 12), (x - 13, y + 7)),
+        )
+        pygame.draw.polygon(
+            screen,
+            (168, 176, 188),
+            ((x - 10, y - 5), (x - 2, y - 9), (x + 6, y - 7), (x + 10, y), (x + 6, y + 7), (x - 2, y + 9), (x - 10, y + 5)),
+            2,
+        )
+    else:
+        pygame.draw.ellipse(screen, (112, 78, 58), (x - 22, y - 16, 44, 32))
+        pygame.draw.rect(screen, (138, 97, 72), (x - 16, y - 10, 32, 20), border_radius=5)
+        pygame.draw.circle(screen, (82, 58, 41), (x - 10, y - 5), 4)
+        pygame.draw.circle(screen, (82, 58, 41), (x + 10, y - 5), 4)
+        pygame.draw.rect(screen, (190, 148, 92), (x - 6, y + 1, 12, 5), border_radius=2)
+
+    if enemy.fortified:
+        pygame.draw.circle(screen, (230, 232, 240), (x, y), int(enemy.radius) + 4, 2)
+    if enemy.camo:
+        pygame.draw.line(screen, (120, 70, 165), (x - 10, y - 10), (x + 10, y + 10), 2)
+    if enemy.lead:
+        pygame.draw.rect(screen, (188, 196, 208), (x - 4, y - 16, 8, 5), border_radius=1)
+    if enemy.regen:
+        pygame.draw.circle(screen, (90, 220, 130), (x + 12, y - 12), 4)
+    if enemy.flying:
+        pygame.draw.arc(screen, (205, 225, 250), (x - 16, y - 16, 16, 12), 0.35, 2.8, 2)
+        pygame.draw.arc(screen, (205, 225, 250), (x, y - 16, 16, 12), 0.35, 2.8, 2)
+
+    if enemy.max_layers > 1:
+        for i in range(min(4, enemy.layers)):
+            pygame.draw.circle(screen, (250, 248, 230), (x - 8 + i * 6, y - int(enemy.radius) - 8), 2)
+
+
 def draw_monkey_tower_on_map(
     screen: pygame.Surface,
     tower: MonkeyTower,
@@ -523,10 +652,10 @@ def draw_play_border(screen: pygame.Surface) -> None:
 def draw_sidebar_bg(screen: pygame.Surface) -> None:
     pygame.draw.rect(screen, COLOR_HUD_BG, (PLAY_WIDTH, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT))
     pygame.draw.line(screen, (48, 56, 68), (PLAY_WIDTH, 0), (PLAY_WIDTH, WINDOW_HEIGHT), 2)
-    header = pygame.Surface((SIDEBAR_WIDTH, 44), pygame.SRCALPHA)
+    header = pygame.Surface((SIDEBAR_WIDTH, 82), pygame.SRCALPHA)
     header.fill((26, 32, 42, 255))
     screen.blit(header, (PLAY_WIDTH, 0))
-    pygame.draw.line(screen, (55, 65, 80), (PLAY_WIDTH, 44), (WINDOW_WIDTH, 44), 1)
+    pygame.draw.line(screen, (55, 65, 80), (PLAY_WIDTH, 82), (WINDOW_WIDTH, 82), 1)
 
 
 def draw_text(
@@ -596,6 +725,7 @@ def draw_hud(
     wave_display: int,
     wave_state: str,
     game_speed: int,
+    auto_wave_skip: bool = False,
     sandbox: bool = False,
     sandbox_flags_label: str = "",
 ) -> None:
@@ -612,6 +742,14 @@ def draw_hud(
     else:
         draw_text(screen, font_small, f"Wave {wave_display}  ·  {wave_state}", pad, pad + 60)
     draw_text_fit(screen, font_small, "Speed · [F] cycles 1x→8x", pad, PLAY_HEIGHT - 64, 168)
+    draw_text(
+        screen,
+        font_small,
+        f"Auto wave [U]: {'ON' if auto_wave_skip else 'OFF'}",
+        pad + 178,
+        PLAY_HEIGHT - 64,
+        (160, 220, 170) if auto_wave_skip else (170, 182, 198),
+    )
     for i, sp in enumerate(HUD_SPEED_CHOICES):
         r = speed_button_rect(i)
         sel = game_speed == sp
@@ -629,8 +767,8 @@ def draw_hud(
 
 def tower_button_rect(index: int, scroll_px: int = 0) -> pygame.Rect:
     x0 = PLAY_WIDTH + 10
-    y0 = 78 + index * 46 - scroll_px
-    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 44)
+    y0 = 116 + index * 48 - scroll_px
+    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 46)
 
 
 def draw_tower_shop(
@@ -640,9 +778,19 @@ def draw_tower_shop(
     selected_type: str | None,
     scroll_px: int = 0,
 ) -> None:
+    # Only the build list area scrolls; keep upgrades area fixed.
+    build_view_top = 82
+    build_view_bottom = UPGRADE_PANEL_Y0 - 8
     old_clip = screen.get_clip()
-    screen.set_clip(pygame.Rect(PLAY_WIDTH, 44, SIDEBAR_WIDTH, WINDOW_HEIGHT - 44))
-    draw_text(screen, font, "Build", PLAY_WIDTH + 14, 48 - scroll_px, COLOR_UI_ACCENT)
+    screen.set_clip(
+        pygame.Rect(
+            PLAY_WIDTH,
+            build_view_top,
+            SIDEBAR_WIDTH,
+            max(0, build_view_bottom - build_view_top),
+        )
+    )
+    draw_text(screen, font, "Build", PLAY_WIDTH + 14, 86 - scroll_px, COLOR_UI_ACCENT)
     for i, key in enumerate(TOWER_SHOP_ORDER):
         r = tower_button_rect(i, scroll_px)
         base = TOWER_TYPES[key]
@@ -652,8 +800,10 @@ def draw_tower_shop(
         brd = (110, 170, 240) if sel else (58, 68, 82)
         pygame.draw.rect(screen, brd, r, 1, border_radius=8)
         draw_tower_icon(screen, r.x + 22, r.centery, key, 14)
-    draw_text_fit(screen, font_small, base["name"], r.x + 40, r.y + 7, r.width - 48)
-    draw_text_fit(screen, font_small, f"${base['cost']}", r.x + 40, r.y + 24, r.width - 48, (190, 205, 220))
+        draw_text_fit(screen, font_small, base["name"], r.x + 40, r.y + 7, r.width - 100)
+        cost_text = f"${base['cost']}"
+        cost_x = r.right - 10 - font_small.size(cost_text)[0]
+        draw_text(screen, font_small, cost_text, cost_x, r.y + 14, (200, 215, 232))
     screen.set_clip(old_clip)
 
 
@@ -707,7 +857,7 @@ def draw_upgrade_panel(
         border_radius=8,
     )
     old_clip = screen.get_clip()
-    screen.set_clip(pygame.Rect(PLAY_WIDTH, 44, SIDEBAR_WIDTH, WINDOW_HEIGHT - 44))
+    screen.set_clip(pygame.Rect(PLAY_WIDTH, panel_top, SIDEBAR_WIDTH, WINDOW_HEIGHT - panel_top))
     draw_text(screen, font, "Upgrades", PLAY_WIDTH + 14, y0 - 26 - scroll_px, COLOR_UI_ACCENT)
     if tower is None:
         draw_text(screen, font_small, "Select a tower", PLAY_WIDTH + 14, y0 + 4 - scroll_px, (160, 170, 185))
@@ -777,8 +927,8 @@ def draw_upgrade_panel(
         draw_text(screen, font_small, f"{lane}", rr.x + 32, rr.y + 5, (130, 160, 190))
         draw_text_fit(screen, font_small, name, rr.x + 32, rr.y + 16, rr.width - 130)
         price_col = (200, 210, 220) if can_buy or maxed else ((160, 140, 180) if locked else (180, 130, 130))
-        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.right - 88, rr.y + 8, price_col)
-        price_x = rr.right - 8 - font_small.size(price)[0]
+        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.x + 116, rr.y + 8, price_col)
+        price_x = rr.right - 10 - font_small.size(price)[0]
         draw_text(screen, font_small, price, price_x, rr.y + 8, price_col)
         if cost is not None and cash < cost:
             draw_text(screen, font_small, "!", rr.right - 14, rr.y + 8, (230, 120, 120))
@@ -843,6 +993,7 @@ def draw_wave_break(
     global_tiers: dict[str, int],
     wave_round_bonus: int = 0,
     farm_income: int = 0,
+    auto_wave_skip: bool = False,
 ) -> None:
     overlay = pygame.Surface((PLAY_WIDTH, PLAY_HEIGHT), pygame.SRCALPHA)
     overlay.fill((8, 12, 18, 210))
@@ -922,6 +1073,15 @@ def draw_wave_break(
         left,
         footer_text_y,
         content_w,
+    )
+    draw_text_fit(
+        screen,
+        font_small,
+        f"Auto wave [U]: {'ON' if auto_wave_skip else 'OFF'}",
+        left,
+        footer_text_y + 20,
+        content_w,
+        (165, 225, 175) if auto_wave_skip else (150, 162, 178),
     )
 
 

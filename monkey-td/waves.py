@@ -6,6 +6,7 @@ from collections import deque
 
 from config import (
     ENEMY_FLAG_CAMO,
+    ENEMY_FLAG_FLYING,
     ENEMY_FLAG_FORTIFIED,
     ENEMY_FLAG_LEAD,
     ENEMY_FLAG_REGEN,
@@ -76,5 +77,6 @@ def make_enemy(
         lead=(flags & ENEMY_FLAG_LEAD) != 0,
         fortified=(flags & ENEMY_FLAG_FORTIFIED) != 0,
         regen=(flags & ENEMY_FLAG_REGEN) != 0,
+        flying=(flags & ENEMY_FLAG_FLYING) != 0,
         boss_decade=boss_decade,
     )

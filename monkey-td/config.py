@@ -9,7 +9,7 @@ FPS = 60
 TITLE = "Monkey vs Bananas Tower Defense"
 
 # World layout (playfield excludes UI sidebar)
-SIDEBAR_WIDTH = 220
+SIDEBAR_WIDTH = 260
 PLAY_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH
 PLAY_HEIGHT = WINDOW_HEIGHT
 
@@ -558,6 +558,7 @@ ENEMY_FLAG_CAMO = 1
 ENEMY_FLAG_LEAD = 2
 ENEMY_FLAG_FORTIFIED = 4
 ENEMY_FLAG_REGEN = 8
+ENEMY_FLAG_FLYING = 16
 
 # Every 10th wave (10, 20, …): one mega-boss (fortified + regen + extra HP).
 BOSS_DECENNIAL_FLAGS = ENEMY_FLAG_FORTIFIED
@@ -706,6 +707,15 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
         "leak_mult": 1.12,
         "reward_mult": 0.93,
         "wave_bonus_mult": 0.9,
+    },
+    "impossible": {
+        "label": "Impossible",
+        "enemy_hp": 1.34,
+        "enemy_speed": 1.14,
+        "starting_cash_mult": 0.75,
+        "leak_mult": 1.28,
+        "reward_mult": 0.86,
+        "wave_bonus_mult": 0.82,
     },
 }
 
