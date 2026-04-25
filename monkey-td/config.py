@@ -156,14 +156,14 @@ TOWER_SHOP_ORDER = (
 )
 
 # Upgrade costs scale by tier (each step on a path gets pricier)
-UPGRADE_COST_TIER_MULT = 1.405
+UPGRADE_COST_TIER_MULT = 1.53
 
 
 def upgrade_cost_tier(base: int, tier_index: int) -> int:
     return int(base * (UPGRADE_COST_TIER_MULT**tier_index))
 
 
-UPGRADE_COST_BASE_PATH = 352
+UPGRADE_COST_BASE_PATH = 440
 
 # Sell tower: fraction of total cash invested (placement + path tiers + Paragon) refunded.
 SELL_REFUND_MULT = 0.72
@@ -544,7 +544,7 @@ TOWER_PATH_PALETTES: dict[str, dict[str, tuple[tuple[int, int, int], tuple[int, 
 
 # Global meta upgrades (between waves)
 # Multiplier per purchased tier for global upgrade costs (shown in wave shop)
-GLOBAL_UPGRADE_COST_MULT = 1.38
+GLOBAL_UPGRADE_COST_MULT = 1.48
 
 GLOBAL_UPGRADES = [
     {"id": "range", "name": "+Range 5%", "max_tier": 5, "base_cost": 158, "effect": 0.05},
@@ -560,13 +560,13 @@ ENEMY_FLAG_FORTIFIED = 4
 ENEMY_FLAG_REGEN = 8
 
 # Every 10th wave (10, 20, …): one mega-boss (fortified + regen + extra HP).
-BOSS_DECENNIAL_FLAGS = ENEMY_FLAG_FORTIFIED | ENEMY_FLAG_REGEN
-BOSS_DECENNIAL_HP_MULT = 1.38
-BOSS_DECENNIAL_REGEN_MULT = 1.55
+BOSS_DECENNIAL_FLAGS = ENEMY_FLAG_FORTIFIED
+BOSS_DECENNIAL_HP_MULT = 1.2
+BOSS_DECENNIAL_REGEN_MULT = 1.35
 # Extra boss scaling: decade = (current_wave_wn + 1) // 10 → waves 1–9 = 0, 10–19 = 1, 20–29 = 2, …
-BOSS_PER_DECADE_HP_MULT = 0.105
-BOSS_PER_DECADE_SPEED_MULT = 0.026
-BOSS_PER_DECADE_REGEN_MULT = 0.055
+BOSS_PER_DECADE_HP_MULT = 0.07
+BOSS_PER_DECADE_SPEED_MULT = 0.02
+BOSS_PER_DECADE_REGEN_MULT = 0.04
 BOSS_PER_DECADE_SPEED_CAP = 1.28
 
 # Wave definitions: spawn_interval_frames, entries: (kind, count)
@@ -614,8 +614,8 @@ def _build_waves_raw() -> list[dict]:
                 ("armored", 18),
             ]
 
-        # Mega-boss every 10th wave (10, 20, …): fortified + high regen (see BOSS_DECENNIAL_FLAGS).
-        if w % 10 == 0:
+        # Mega-boss every 10th wave from wave 20 onward (20, 30, 40, ...).
+        if w % 10 == 0 and w >= 20:
             entries.append(("boss", 1, BOSS_DECENNIAL_FLAGS))
 
         # BTD-style modifiers: camo (hidden), lead (metal), fortified, regen
@@ -714,7 +714,7 @@ ENEMY_STATS: dict[str, dict] = {
     "banana": {"hp": 31, "speed": 1.1, "leak": 2, "radius": 12, "reward": KILL_REWARD_BANANA},
     "fast": {"hp": 23, "speed": 1.6, "leak": 2, "radius": 10, "reward": KILL_REWARD_FAST},
     "armored": {"hp": 74, "speed": 0.9, "leak": 4, "radius": 13, "reward": KILL_REWARD_ARMORED},
-    "boss": {"hp": 2650, "speed": 0.52, "leak": 20, "radius": 42, "reward": KILL_REWARD_BOSS},
+    "boss": {"hp": 1650, "speed": 0.5, "leak": 20, "radius": 42, "reward": KILL_REWARD_BOSS},
 }
 
 FINAL_WAVE_INDEX = len(WAVES_RAW) - 1

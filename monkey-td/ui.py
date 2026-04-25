@@ -56,13 +56,13 @@ def mode_button_rect(index: int) -> pygame.Rect:
 def map_button_rect(index: int) -> pygame.Rect:
     """Full-window map picker: 2 columns × 5 rows."""
     cols = 2
-    pad = 18
+    pad = 24
     bw = (WINDOW_WIDTH - pad * 3) // 2
-    bh = 62
+    bh = 68
     row = index // cols
     col = index % cols
     x = pad + col * (bw + pad)
-    y = 88 + row * (bh + 10)
+    y = 92 + row * (bh + 12)
     return pygame.Rect(x, y, bw, bh)
 
 
@@ -541,6 +541,38 @@ def draw_text(
     screen.blit(surf, (x, y))
 
 
+def _fit_text(font: pygame.font.Font, text: str, max_width: int) -> str:
+    """Trim text with ellipsis so it fits in max_width pixels."""
+    if max_width <= 8:
+        return ""
+    if font.size(text)[0] <= max_width:
+        return text
+    ell = "..."
+    lo, hi = 0, len(text)
+    best = ell
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid].rstrip() + ell
+        if font.size(cand)[0] <= max_width:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def draw_text_fit(
+    screen: pygame.Surface,
+    font: pygame.font.Font,
+    text: str,
+    x: int,
+    y: int,
+    max_width: int,
+    color: tuple[int, int, int] = COLOR_TEXT,
+) -> None:
+    draw_text(screen, font, _fit_text(font, text, max_width), x, y, color)
+
+
 # Simulation steps per display frame (click HUD or keys [1][2][3][8])
 HUD_SPEED_CHOICES = (1, 2, 3, 8)
 
@@ -548,10 +580,10 @@ HUD_SPEED_CHOICES = (1, 2, 3, 8)
 def speed_button_rect(index: int) -> pygame.Rect:
     """Clickable speed buttons left-to-right: 1x, 2x, 3x, 8x (index 0..3)."""
     pad = 10
-    y = PLAY_HEIGHT - 36
-    w, h = 40, 26
-    gap = 5
-    x0 = pad + 168
+    y = PLAY_HEIGHT - 40
+    w, h = 46, 28
+    gap = 7
+    x0 = pad + 182
     return pygame.Rect(x0 + index * (w + gap), y, w, h)
 
 
@@ -568,18 +600,18 @@ def draw_hud(
     sandbox_flags_label: str = "",
 ) -> None:
     pad = 10
-    hud = pygame.Surface((380, 118), pygame.SRCALPHA)
+    hud = pygame.Surface((430, 132), pygame.SRCALPHA)
     hud.fill((12, 18, 24, 200))
     screen.blit(hud, (pad - 4, pad - 4))
-    pygame.draw.rect(screen, (55, 75, 95), (pad - 4, pad - 4, 380, 118), 1, border_radius=8)
+    pygame.draw.rect(screen, (55, 75, 95), (pad - 4, pad - 4, 430, 132), 1, border_radius=8)
     draw_text(screen, font, f"Base HP  {base_hp}", pad, pad)
     draw_text(screen, font, f"Cash  ${cash}", pad, pad + 28)
     if sandbox:
-        draw_text(screen, font_small, "Sandbox  ·  freeplay test mode", pad, pad + 56)
-        draw_text(screen, font_small, sandbox_flags_label, pad, pad + 74, (170, 205, 190))
+        draw_text(screen, font_small, "Sandbox  ·  freeplay test mode", pad, pad + 60)
+        draw_text(screen, font_small, sandbox_flags_label, pad, pad + 82, (170, 205, 190))
     else:
-        draw_text(screen, font_small, f"Wave {wave_display}  ·  {wave_state}", pad, pad + 56)
-    draw_text(screen, font_small, "Speed · [F] cycles 1x→8x", pad, PLAY_HEIGHT - 58)
+        draw_text(screen, font_small, f"Wave {wave_display}  ·  {wave_state}", pad, pad + 60)
+    draw_text_fit(screen, font_small, "Speed · [F] cycles 1x→8x", pad, PLAY_HEIGHT - 64, 168)
     for i, sp in enumerate(HUD_SPEED_CHOICES):
         r = speed_button_rect(i)
         sel = game_speed == sp
@@ -587,17 +619,17 @@ def draw_hud(
         pygame.draw.rect(screen, bg, r, border_radius=6)
         pygame.draw.rect(screen, (140, 190, 255) if sel else (70, 80, 95), r, 1, border_radius=6)
         label = f"{sp}x"
-        tx = r.x + (10 if sp < 10 else 8)
-        draw_text(screen, font_small, label, tx, r.y + 5, (235, 240, 250) if sel else (180, 190, 205))
+        tx = r.x + (13 if sp < 10 else 10)
+        draw_text(screen, font_small, label, tx, r.y + 6, (235, 240, 250) if sel else (180, 190, 205))
     hud_keys = "Keys [1][2][3][8]   Pause [P]"
     if sandbox:
         hud_keys = "Spawn [Q/W/E/R]  flags [J/K/L/N]  x5 hold Shift"
-    draw_text(screen, font_small, hud_keys, pad, PLAY_HEIGHT - 30)
+    draw_text_fit(screen, font_small, hud_keys, pad, PLAY_HEIGHT - 28, 430 - 2 * pad)
 
 
-def tower_button_rect(index: int) -> pygame.Rect:
+def tower_button_rect(index: int, scroll_px: int = 0) -> pygame.Rect:
     x0 = PLAY_WIDTH + 10
-    y0 = 78 + index * 46
+    y0 = 78 + index * 46 - scroll_px
     return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 44)
 
 
@@ -606,10 +638,13 @@ def draw_tower_shop(
     font: pygame.font.Font,
     font_small: pygame.font.Font,
     selected_type: str | None,
+    scroll_px: int = 0,
 ) -> None:
-    draw_text(screen, font, "Build", PLAY_WIDTH + 14, 48, COLOR_UI_ACCENT)
+    old_clip = screen.get_clip()
+    screen.set_clip(pygame.Rect(PLAY_WIDTH, 44, SIDEBAR_WIDTH, WINDOW_HEIGHT - 44))
+    draw_text(screen, font, "Build", PLAY_WIDTH + 14, 48 - scroll_px, COLOR_UI_ACCENT)
     for i, key in enumerate(TOWER_SHOP_ORDER):
-        r = tower_button_rect(i)
+        r = tower_button_rect(i, scroll_px)
         base = TOWER_TYPES[key]
         sel = selected_type == key
         bg = (48, 58, 74) if sel else (32, 38, 48)
@@ -617,32 +652,33 @@ def draw_tower_shop(
         brd = (110, 170, 240) if sel else (58, 68, 82)
         pygame.draw.rect(screen, brd, r, 1, border_radius=8)
         draw_tower_icon(screen, r.x + 22, r.centery, key, 14)
-        draw_text(screen, font_small, base["name"][:15], r.x + 40, r.y + 5)
-        draw_text(screen, font_small, f"${base['cost']}", r.x + 40, r.y + 22, (190, 205, 220))
+    draw_text_fit(screen, font_small, base["name"], r.x + 40, r.y + 7, r.width - 48)
+    draw_text_fit(screen, font_small, f"${base['cost']}", r.x + 40, r.y + 24, r.width - 48, (190, 205, 220))
+    screen.set_clip(old_clip)
 
 
-def upgrade_row_rect(y_start: int, index: int) -> pygame.Rect:
+def upgrade_row_rect(y_start: int, index: int, scroll_px: int = 0) -> pygame.Rect:
     """index 0,1,2 for paths A,B,C."""
     x0 = PLAY_WIDTH + 10
-    y0 = y_start + index * 42
+    y0 = y_start + index * 42 - scroll_px
     return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 36)
 
 
 # Align with draw_upgrade_panel tower block (must match game.handle_click upgrade hits).
 # Nine build rows end at y≈460; keep upgrades below the shop list.
-UPGRADE_PANEL_Y0 = 506
+UPGRADE_PANEL_Y0 = 448
 UPGRADE_PATHS_ROW_Y = UPGRADE_PANEL_Y0 + 52
 
 
-def paragon_upgrade_rect(paths_row_y: int = UPGRADE_PATHS_ROW_Y) -> pygame.Rect:
+def paragon_upgrade_rect(paths_row_y: int = UPGRADE_PATHS_ROW_Y, scroll_px: int = 0) -> pygame.Rect:
     x0 = PLAY_WIDTH + 10
-    y = paths_row_y + 3 * 42 + 12
+    y = paths_row_y + 3 * 42 + 12 - scroll_px
     return pygame.Rect(x0, y, SIDEBAR_WIDTH - 20, 44)
 
 
-def sell_tower_button_rect() -> pygame.Rect:
+def sell_tower_button_rect(scroll_px: int = 0) -> pygame.Rect:
     """Top-right of the upgrades panel when a tower is selected."""
-    return pygame.Rect(WINDOW_WIDTH - 114, UPGRADE_PANEL_Y0 - 32, 108, 30)
+    return pygame.Rect(WINDOW_WIDTH - 114, UPGRADE_PANEL_Y0 - 32 - scroll_px, 108, 30)
 
 
 def draw_upgrade_panel(
@@ -651,6 +687,7 @@ def draw_upgrade_panel(
     font_small: pygame.font.Font,
     tower: MonkeyTower | None,
     cash: int,
+    scroll_px: int = 0,
 ) -> None:
     # Below tower shop (nine rows end ~460); panel only covers upgrade block
     y0 = UPGRADE_PANEL_Y0
@@ -669,11 +706,14 @@ def draw_upgrade_panel(
         1,
         border_radius=8,
     )
-    draw_text(screen, font, "Upgrades", PLAY_WIDTH + 14, y0 - 26, COLOR_UI_ACCENT)
+    old_clip = screen.get_clip()
+    screen.set_clip(pygame.Rect(PLAY_WIDTH, 44, SIDEBAR_WIDTH, WINDOW_HEIGHT - 44))
+    draw_text(screen, font, "Upgrades", PLAY_WIDTH + 14, y0 - 26 - scroll_px, COLOR_UI_ACCENT)
     if tower is None:
-        draw_text(screen, font_small, "Select a tower", PLAY_WIDTH + 14, y0 + 4, (160, 170, 185))
+        draw_text(screen, font_small, "Select a tower", PLAY_WIDTH + 14, y0 + 4 - scroll_px, (160, 170, 185))
+        screen.set_clip(old_clip)
         return
-    sr = sell_tower_button_rect()
+    sr = sell_tower_button_rect(scroll_px)
     pygame.draw.rect(screen, (52, 40, 46), sr, border_radius=6)
     pygame.draw.rect(screen, (220, 140, 140), sr, 2, border_radius=6)
     ref = tower.sell_refund_amount()
@@ -682,22 +722,26 @@ def draw_upgrade_panel(
     dp = tower.dominant_path()
     lane_of = {"a": 0, "b": 1, "c": 2}
     lane_label = PATH_LANE_NAMES[lane_of[dp]] if dp else "—"
-    draw_tower_icon(screen, PLAY_WIDTH + 28, y0 + 8, tower.tower_type, 12, tower=tower)
-    draw_text(screen, font_small, tower.display_name()[:19], PLAY_WIDTH + 48, y0 + 2)
-    draw_text(
+    draw_tower_icon(screen, PLAY_WIDTH + 28, y0 + 8 - scroll_px, tower.tower_type, 12, tower=tower)
+    text_x = PLAY_WIDTH + 48
+    text_w = WINDOW_WIDTH - text_x - 12
+    draw_text_fit(screen, font_small, tower.display_name(), text_x, y0 + 2 - scroll_px, text_w)
+    draw_text_fit(
         screen,
         font_small,
         f"{PATH_LANE_NAMES[0]}/{PATH_LANE_NAMES[1]}/{PATH_LANE_NAMES[2]}  ·  lead {lane_label}",
-        PLAY_WIDTH + 48,
-        y0 + 18,
+        text_x,
+        y0 + 18 - scroll_px,
+        text_w,
         (130, 165, 188),
     )
-    draw_text(
+    draw_text_fit(
         screen,
         font_small,
         f"Crosspath: one t{CROSSPATH_MAJOR_TIER}+ path, others ≤t{CROSSPATH_OTHER_MAX}",
-        PLAY_WIDTH + 48,
-        y0 + 32,
+        text_x,
+        y0 + 32 - scroll_px,
+        text_w,
         (110, 150, 175),
     )
     paths = TOWER_PATH_UPGRADES[tower.tower_type]
@@ -710,7 +754,7 @@ def draw_upgrade_panel(
     ]
     mx = tower.max_tier()
     for key, lane, name, tier, cost, ri in rows:
-        rr = upgrade_row_rect(row_y, ri)
+        rr = upgrade_row_rect(row_y, ri, scroll_px)
         maxed = tier >= mx
         locked = not maxed and cost is None
         can_buy = cost is not None and cash >= cost
@@ -731,20 +775,15 @@ def draw_upgrade_panel(
         hot = (150, 210, 255) if can_buy or maxed else ((100, 90, 110) if locked else (120, 100, 100))
         draw_text(screen, font_small, f"[{key}]", rr.x + 8, rr.y + 8, hot)
         draw_text(screen, font_small, f"{lane}", rr.x + 32, rr.y + 5, (130, 160, 190))
-        draw_text(screen, font_small, name[:11], rr.x + 32, rr.y + 16)
+        draw_text_fit(screen, font_small, name, rr.x + 32, rr.y + 16, rr.width - 130)
         price_col = (200, 210, 220) if can_buy or maxed else ((160, 140, 180) if locked else (180, 130, 130))
-        draw_text(
-            screen,
-            font_small,
-            f"t{tier}/{MAX_PATH_TIER}  {price}",
-            rr.right - 88,
-            rr.y + 8,
-            price_col,
-        )
+        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.right - 88, rr.y + 8, price_col)
+        price_x = rr.right - 8 - font_small.size(price)[0]
+        draw_text(screen, font_small, price, price_x, rr.y + 8, price_col)
         if cost is not None and cash < cost:
             draw_text(screen, font_small, "!", rr.right - 14, rr.y + 8, (230, 120, 120))
 
-    pr = paragon_upgrade_rect(row_y)
+    pr = paragon_upgrade_rect(row_y, scroll_px)
     if tower.paragon:
         pygame.draw.rect(screen, (52, 44, 72), pr, border_radius=6)
         pygame.draw.rect(screen, (210, 160, 255), pr, 2, border_radius=6)
@@ -782,14 +821,15 @@ def draw_upgrade_panel(
             pr.y + 12,
             (105, 115, 130),
         )
+    screen.set_clip(old_clip)
 
 
 def wave_panel_rects() -> tuple[pygame.Rect, pygame.Rect]:
     """Next wave button, maybe full panel."""
-    panel_w = 500
-    panel_h = 290
-    panel = pygame.Rect(PLAY_WIDTH // 2 - panel_w // 2, PLAY_HEIGHT // 2 - 122, panel_w, panel_h)
-    next_r = pygame.Rect(panel.centerx - 110, panel.bottom - 64, 220, 46)
+    panel_w = 540
+    panel_h = 326
+    panel = pygame.Rect(PLAY_WIDTH // 2 - panel_w // 2, PLAY_HEIGHT // 2 - 140, panel_w, panel_h)
+    next_r = pygame.Rect(panel.centerx - 116, panel.bottom - 70, 232, 48)
     return next_r, panel
 
 
@@ -811,37 +851,47 @@ def draw_wave_break(
     pygame.draw.rect(screen, (24, 30, 40), panel, border_radius=12)
     pygame.draw.rect(screen, COLOR_UI_ACCENT, panel, 2, border_radius=12)
     cx = panel.centerx
-    draw_text(screen, font_title, "Wave complete", cx - 88, panel.y + 16)
-    draw_text(
+    left = panel.x + 28
+    right_pad = 28
+    content_w = panel.width - (left - panel.x) - right_pad
+    draw_text_fit(screen, font_title, "Wave complete", cx - 90, panel.y + 20, 180)
+    draw_text_fit(
         screen,
         font_small,
         "Endless · Mega-boss (regen) every 10th wave · extra ramp after wave 10",
-        panel.x + 24,
-        panel.y + 50,
+        left,
+        panel.y + 58,
+        content_w,
         (150, 170, 190),
     )
-    draw_text(
+    draw_text_fit(
         screen,
         font_small,
         "Spend on global upgrades, then continue.",
-        panel.x + 24,
-        panel.y + 72,
+        left,
+        panel.y + 82,
+        content_w,
         (170, 185, 200),
     )
-    pygame.draw.line(screen, (58, 72, 88), (panel.x + 20, panel.y + 96), (panel.right - 20, panel.y + 96), 1)
-    income_y = panel.y + 112
+    pygame.draw.line(screen, (58, 72, 88), (panel.x + 24, panel.y + 110), (panel.right - 24, panel.y + 110), 1)
+    income_y = panel.y + 130
     if wave_round_bonus or farm_income:
-        draw_text(
+        draw_text_fit(
             screen,
             font_small,
             f"Income this round:  +${wave_round_bonus} wave  ·  +${farm_income} farms",
-            panel.x + 24,
-            panel.y + 112,
+            left,
+            panel.y + 130,
+            content_w,
             (140, 200, 160),
         )
-        income_y = panel.y + 136
+        income_y = panel.y + 158
 
+    footer_text_y = panel.bottom - 90
+    footer_sep_y = panel.bottom - 98
     y = income_y
+    available_h = max(24, footer_sep_y - y - 8)
+    row_gap = max(24, min(34, available_h // max(1, len(GLOBAL_UPGRADES))))
     for gu in GLOBAL_UPGRADES:
         gid = gu["id"]
         tier = global_tiers.get(gid, 0)
@@ -855,16 +905,23 @@ def draw_wave_break(
             label += f"   ${cost}   [key {GLOBAL_UPGRADES.index(gu)+7}]"
         else:
             label += "   MAX"
-        draw_text(screen, font_small, label, panel.x + 24, y)
-        y += 30
+        draw_text_fit(screen, font_small, label, left, y, content_w)
+        y += row_gap
 
-    pygame.draw.line(screen, (58, 72, 88), (panel.x + 20, panel.bottom - 86), (panel.right - 20, panel.bottom - 86), 1)
-    draw_text(
+    pygame.draw.line(
+        screen,
+        (58, 72, 88),
+        (panel.x + 24, footer_sep_y),
+        (panel.right - 24, footer_sep_y),
+        1,
+    )
+    draw_text_fit(
         screen,
         font,
         f"Next: Wave {wave_next}   [SPACE] or button   ·   [T] Title screen",
-        panel.x + 24,
-        panel.bottom - 78,
+        left,
+        footer_text_y,
+        content_w,
     )
 
 

@@ -270,9 +270,7 @@ class Game:
     def _cull_dead_enemies(self) -> None:
         new: list = []
         for e in self.enemies:
-            if not e.alive:
-                continue
-            if e.hp <= 0:
+            if e.hp <= 0 and not e.leaked:
                 if self.run_mode == "sandbox":
                     continue
                 dset = DIFFICULTY_SETTINGS[self.difficulty]
@@ -281,6 +279,8 @@ class Game:
                 rw *= float(dset["reward_mult"])
                 rw *= enemy_reward_multiplier(e)
                 self.cash += int(rw)
+            elif not e.alive:
+                continue
             else:
                 new.append(e)
         self.enemies = new
@@ -318,7 +318,7 @@ class Game:
                 continue
             e.tick_slow()
             if e.regen_per_frame > 0:
-                e.hp = min(e.max_hp, e.hp + e.regen_per_frame)
+                e.tick_regen()
             e.distance += e.speed
             if e.distance >= self.path_len - 0.01:
                 if e.kind == "boss":
@@ -328,6 +328,7 @@ class Game:
                     leak = int(ENEMY_STATS[e.kind]["leak"] * lm)
                 if self.run_mode != "sandbox":
                     self.base_hp -= leak
+                e.leaked = True
                 e.alive = False
         self.enemies = [e for e in self.enemies if e.alive]
 

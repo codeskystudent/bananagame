@@ -41,10 +41,29 @@ from config import (
 def _path_bonus(tower_type: str, tier_a: int, tier_b: int, tier_c: int, stat: str) -> float:
     defs = TOWER_PATH_UPGRADES[tower_type]
     s = 0.0
+    total_tiers = tier_a + tier_b + tier_c
     for letter, tier in (("a", tier_a), ("b", tier_b), ("c", tier_c)):
         _, st, val = defs[letter]
         if st == stat:
             s += val * float(tier)
+    # Small universal spillover so each path still helps multiple stats.
+    # Primary path stat remains the strongest source of scaling.
+    if stat == "damage":
+        s += 0.006 * total_tiers
+    elif stat == "range":
+        s += 0.008 * total_tiers
+    elif stat == "firerate":
+        s += 0.005 * total_tiers
+    elif stat == "splash":
+        s += 0.010 * total_tiers
+    elif stat == "slow":
+        s += 0.004 * total_tiers
+    elif stat == "farm_mult":
+        s += 0.010 * total_tiers
+    elif stat == "farm_mult_b":
+        s += 0.006 * total_tiers
+    elif stat == "farm_flat":
+        s += 1.5 * total_tiers
     return s
 
 
@@ -66,6 +85,11 @@ class Enemy:
     regen: bool = False
     regen_per_frame: float = 0.0
     boss_decade: int = 0
+    layers: int = 1
+    max_layers: int = 1
+    layer_max_hp: float = 0.0
+    regen_layer_progress: float = 0.0
+    leaked: bool = False
     _hp_speed_mult: float = field(default=1.0, init=False)
 
     def __post_init__(self) -> None:
@@ -87,6 +111,22 @@ class Enemy:
             self.regen_per_frame *= BOSS_DECENNIAL_REGEN_MULT
         if self.kind == "boss" and self.boss_decade > 0 and self.regen:
             self.regen_per_frame *= 1.0 + self.boss_decade * BOSS_PER_DECADE_REGEN_MULT
+        if self.kind == "boss":
+            self.max_layers = 1
+        else:
+            base_layers = {"banana": 2, "fast": 2, "armored": 3}.get(self.kind, 1)
+            if self.lead:
+                base_layers += 1
+            if self.fortified:
+                base_layers += 1
+            self.max_layers = max(1, base_layers)
+        self.layers = self.max_layers
+        if self.max_layers <= 1:
+            self.layer_max_hp = self.max_hp
+        else:
+            # Multi-layer bloons are tougher than single layer, but not absurdly so.
+            self.layer_max_hp = self.max_hp * (0.5 + 0.08 * min(4, self.max_layers - 1))
+        self.hp = self.layer_max_hp
         # Weaker (lower HP) bloons move faster; tanky / fortified ones move slower.
         raw = (REF_HP_SPEED / max(self.max_hp, 1.0)) ** HP_SPEED_CURVE
         self._hp_speed_mult = max(
@@ -112,6 +152,35 @@ class Enemy:
             self.slow_timer -= 1
             if self.slow_timer <= 0:
                 self.slow_mult = 1.0
+
+    def apply_damage(self, damage: float) -> None:
+        """Damage can remove one or more layers; enemy dies when no layers remain."""
+        if damage <= 0 or not self.alive:
+            return
+        d = damage
+        while d > 0 and self.layers > 0:
+            if d < self.hp:
+                self.hp -= d
+                d = 0
+                break
+            d -= self.hp
+            self.layers -= 1
+            if self.layers <= 0:
+                self.hp = 0.0
+                self.alive = False
+                return
+            self.hp = self.layer_max_hp
+
+    def tick_regen(self) -> None:
+        if self.regen_per_frame <= 0 or not self.alive:
+            return
+        self.hp = min(self.layer_max_hp, self.hp + self.regen_per_frame)
+        if self.layers < self.max_layers:
+            self.regen_layer_progress += self.regen_per_frame
+            need = self.layer_max_hp * 0.45
+            if self.regen_layer_progress >= need and self.hp >= self.layer_max_hp * 0.75:
+                self.layers += 1
+                self.regen_layer_progress = max(0.0, self.regen_layer_progress - need)
 
 
 @dataclass
@@ -380,6 +449,25 @@ def lead_damage_multiplier(
     return 0.0
 
 
+def regen_damage_multiplier(
+    tower_type: str, tier_a: int, tier_b: int, tier_c: int, _damage_type: str
+) -> float:
+    """Regen immunity is locked behind specific path investments by tower."""
+    if tower_type == "dart":
+        return 1.0 if tier_b >= 3 else 0.0
+    if tower_type == "cannon":
+        return 1.0 if tier_c >= 2 else 0.0
+    if tower_type == "ice":
+        return 1.0 if tier_a >= 2 else 0.0
+    if tower_type == "sniper":
+        return 1.0 if tier_a >= 2 else 0.0
+    if tower_type == "boom":
+        return 1.0 if tier_b >= 2 else 0.0
+    if tower_type == "super":
+        return 1.0 if tier_b >= 1 else 0.0
+    return 0.0
+
+
 def damage_vs_enemy(
     base_damage: float,
     enemy: Enemy,
@@ -391,13 +479,18 @@ def damage_vs_enemy(
     *,
     paragon: bool = False,
 ) -> float:
-    if not enemy.lead:
-        return base_damage
-    if paragon:
-        return base_damage
-    return base_damage * lead_damage_multiplier(
-        tower_type, tier_a, tier_b, tier_c, damage_type
-    )
+    d = base_damage
+    if enemy.lead:
+        if paragon:
+            pass
+        else:
+            d *= lead_damage_multiplier(tower_type, tier_a, tier_b, tier_c, damage_type)
+    if enemy.regen:
+        if paragon:
+            pass
+        else:
+            d *= regen_damage_multiplier(tower_type, tier_a, tier_b, tier_c, damage_type)
+    return d
 
 
 def enemy_reward_multiplier(e: Enemy) -> float:
@@ -466,7 +559,7 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
                 paragon=proj.paragon,
             )
             if d > 0:
-                best.hp -= d
+                best.apply_damage(d)
                 if proj.slow_pct > 0:
                     best.apply_slow(proj.slow_pct, proj.slow_frames)
     else:
@@ -486,6 +579,6 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
                     paragon=proj.paragon,
                 )
                 if d > 0:
-                    e.hp -= d
+                    e.apply_damage(d)
                     if proj.slow_pct > 0:
                         e.apply_slow(proj.slow_pct, proj.slow_frames)
