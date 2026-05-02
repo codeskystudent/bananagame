@@ -35,10 +35,23 @@ from maps import MAP_DEFINITIONS
 
 # Sidebar layout — shared by drawing and hit-testing (game.handle_click).
 SIDEBAR_PAD_X = 18
-TOWER_ROW_HEIGHT = 64
+TOWER_ROW_HEIGHT = 70
 TOWER_ROW_GAP = 14
 TOWER_ROW_STEP = TOWER_ROW_HEIGHT + TOWER_ROW_GAP
 TOWER_SHOP_TOP = 134
+
+# Bloon modifier cheat-sheet in build list (no upgrade wording).
+TOWER_SHOP_MOD_SUMMARY: dict[str, str] = {
+    "dart": "Lead (Top)",
+    "cannon": "Lead",
+    "ice": "Slow · Stall regen (Mid)",
+    "sniper": "Lead · Camo · Flying",
+    "boom": "Lead · Camo (Bot)",
+    "super": "Lead",
+    "farm": "—",
+    "village": "Camo · Fortified · Regen (allies)",
+    "workshop": "—",
+}
 
 UPGRADE_PANEL_Y0 = 518
 UPGRADE_ROW_HEIGHT = 80
@@ -157,15 +170,55 @@ def tower_upgrade_stat_lines(tower: MonkeyTower) -> list[tuple[str, tuple[int, i
                 mods_col = (190, 175, 145)
     elif tower.tower_type == "village":
         mods_txt = (
-            f"Middle t{SNIPER_SPECIAL_TIER}+: allies gain camo vision · "
-            f"Bottom t{SNIPER_SPECIAL_TIER}+: allies +7% dmg vs regen (in aura)"
+            f"Top t{SNIPER_SPECIAL_TIER}+: allies +7% dmg vs fortified · "
+            f"Middle t{SNIPER_SPECIAL_TIER}+: ally camo detection · "
+            f"Bottom t{SNIPER_SPECIAL_TIER}+: allies +7% dmg vs regen (all in aura)"
         )
         mods_col = (175, 195, 215)
+    elif tower.tower_type == "dart":
+        if tower.paragon or tower.tier_a >= SNIPER_SPECIAL_TIER:
+            mods_txt = (
+                "Top path t3+: lead pop · camo: Sniper mid, Boom bot, or Village mid · "
+                "flying: Sniper bot · regen: damaged (heals)"
+            )
+            mods_col = (158, 208, 168)
+        else:
+            mods_txt = (
+                f"Top path t{SNIPER_SPECIAL_TIER}+: lead · camo: Sniper mid, Boom bot, or Village mid · "
+                "flying: Sniper bot · regen: damaged (heals)"
+            )
+            mods_col = (190, 175, 145)
+    elif tower.tower_type == "ice":
+        if tower.paragon or tower.tier_b >= SNIPER_SPECIAL_TIER:
+            mods_txt = (
+                "Slow · Middle t3+: hits pause regen healing briefly · "
+                "lead: explosive/plasma or top Dart/Sniper"
+            )
+            mods_col = (158, 208, 168)
+        else:
+            mods_txt = (
+                f"Slow · Middle t{SNIPER_SPECIAL_TIER}+: pause regen heal on hit · "
+                "lead: explosive/plasma or top Dart/Sniper"
+            )
+            mods_col = (190, 175, 145)
+    elif tower.tower_type == "boom":
+        if tower.paragon or tower.tier_c >= SNIPER_SPECIAL_TIER:
+            mods_txt = (
+                "Explosive pops lead · Bottom t3+: camo · "
+                "extra camo: Sniper mid or Village mid · flying: Sniper bot · regen: damaged (heals)"
+            )
+            mods_col = (158, 208, 168)
+        else:
+            mods_txt = (
+                f"Explosive pops lead · Bottom t{SNIPER_SPECIAL_TIER}+: camo · "
+                "extra camo: Sniper mid or Village mid · flying: Sniper bot · regen: damaged (heals)"
+            )
+            mods_col = (190, 175, 145)
     else:
         dt = TOWER_DAMAGE_TYPE.get(tower.tower_type, "sharp")
         lead_note = "explosive/plasma pop lead" if dt in ("explosive", "plasma") else "no lead pop (sharp/cold)"
         mods_txt = (
-            f"{lead_note} · camo: Sniper mid or Village mid aura · "
+            f"{lead_note} · camo: Sniper mid, Boom bot, or Village mid aura · "
             f"flying: Sniper bot · regen: always damaged (heals)"
         )
         mods_col = (150, 175, 195)
@@ -907,6 +960,90 @@ def draw_enemy_sprite(screen: pygame.Surface, enemy: Enemy, x: int, y: int) -> N
             pygame.draw.circle(screen, (250, 248, 230), (x - 8 + i * 6, y - int(enemy.radius) - 8), 2)
 
 
+def enemy_under_mouse(enemies: list[Enemy], mx: int, my: int, pad: float = 8.0) -> Enemy | None:
+    """Return topmost enemy whose sprite overlaps the cursor (playfield coordinates)."""
+    for e in reversed(enemies):
+        if not e.alive:
+            continue
+        px = float(getattr(e, "_px", 0.0))
+        py = float(getattr(e, "_py", 0.0))
+        dx, dy = mx - px, my - py
+        hit_r = float(e.radius) + pad
+        if dx * dx + dy * dy <= hit_r * hit_r:
+            return e
+    return None
+
+
+def draw_enemy_hover_tooltip(
+    screen: pygame.Surface,
+    enemy: Enemy,
+    font_small: pygame.font.Font,
+    mx: int,
+    my: int,
+) -> None:
+    """Small panel near the cursor: HP, layers, bloon modifiers."""
+    labels = {
+        "banana": "Banana",
+        "fast": "Fast",
+        "armored": "Armored",
+        "raider": "Raider",
+        "moab": "MOAB",
+        "boss": "Boss",
+    }
+    title = labels.get(enemy.kind, enemy.kind.title())
+    if enemy.kind == "boss" and enemy.boss_decade > 0:
+        title = f"Boss (×{enemy.boss_decade})"
+
+    hp_cur = max(0, int(enemy.hp))
+    hp_cap = max(1, int(enemy.layer_max_hp))
+    lines: list[tuple[str, tuple[int, int, int]]] = [
+        (title, COLOR_UI_ACCENT),
+        (f"HP  {hp_cur} / {hp_cap}", COLOR_TEXT),
+    ]
+    if enemy.max_layers > 1:
+        lines.append((f"Layers  {enemy.layers} / {enemy.max_layers}", (175, 185, 200)))
+
+    tags: list[str] = []
+    if enemy.camo:
+        tags.append("Camo")
+    if enemy.lead:
+        tags.append("Lead")
+    if enemy.fortified:
+        tags.append("Fortified")
+    if enemy.regen:
+        tags.append("Regen")
+    if enemy.flying:
+        tags.append("Flying")
+    mod_str = ", ".join(tags) if tags else "None"
+    lines.append((f"Modifiers  {mod_str}", (145, 205, 165)))
+
+    pad = 10
+    line_skip = font_small.get_linesize() + 3
+    inner_w = max(font_small.size(t)[0] for t, _ in lines)
+    w = inner_w + pad * 2
+    h = len(lines) * line_skip + pad * 2 - 3
+
+    margin = 8
+    offset = 14
+    x = mx + offset
+    y = my + offset
+    if x + w > PLAY_WIDTH - margin:
+        x = mx - w - offset
+    if y + h > PLAY_HEIGHT - margin:
+        y = my - h - offset
+    x = max(margin, min(x, PLAY_WIDTH - w - margin))
+    y = max(margin, min(y, PLAY_HEIGHT - h - margin))
+
+    r = pygame.Rect(x, y, w, h)
+    tip = pygame.Surface((w, h), pygame.SRCALPHA)
+    tip.fill((18, 24, 34, 245))
+    screen.blit(tip, (x, y))
+    pygame.draw.rect(screen, (85, 105, 130), r, 1, border_radius=8)
+
+    for i, (txt, col) in enumerate(lines):
+        draw_text(screen, font_small, txt, x + pad, y + pad + i * line_skip, col)
+
+
 def draw_monkey_tower_on_map(
     screen: pygame.Surface,
     tower: MonkeyTower,
@@ -1077,11 +1214,19 @@ def draw_tower_shop(
         brd = (110, 170, 240) if sel else (58, 68, 82)
         _rounded_panel(screen, r, bg, border=brd, border_radius=8)
         draw_tower_icon(screen, r.x + 24, r.centery, key, 14)
-        name_y = r.y + 11
-        draw_text_fit(screen, font_small, base["name"], r.x + 48, name_y, r.width - 112)
+        draw_text_fit(screen, font_small, base["name"], r.x + 48, r.y + 7, r.width - 112)
+        draw_text_fit(
+            screen,
+            font_small,
+            TOWER_SHOP_MOD_SUMMARY[key],
+            r.x + 48,
+            r.y + 22,
+            r.width - 52,
+            (125, 142, 162),
+        )
         cost_text = f"${base['cost']}"
         cost_x = r.right - 12 - font_small.size(cost_text)[0]
-        draw_text(screen, font_small, cost_text, cost_x, r.y + 34, (200, 215, 232))
+        draw_text(screen, font_small, cost_text, cost_x, r.y + 46, (200, 215, 232))
     screen.set_clip(old_clip)
 
 

@@ -704,6 +704,9 @@ HP_SPEED_MULT_MAX = 1.36
 # Sniper: camo / flying / lead / regen handling unlocks when max(path tiers) reaches this.
 SNIPER_SPECIAL_TIER = 3
 
+# Ice middle path (tier 3+): hits pause enemy regen healing for this many frames (~4s at 60 FPS).
+ICE_REGEN_SUPPRESS_FRAMES = 240
+
 # Tower attack types — used for lead / metal rules (explosive & plasma pop lead without Sniper upgrades)
 TOWER_DAMAGE_TYPE: dict[str, str] = {
     "dart": "sharp",

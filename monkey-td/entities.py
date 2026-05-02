@@ -30,6 +30,7 @@ from config import (
     REGEN_HP_PER_FRAME,
     SELL_REFUND_MULT,
     TOWER_PATH_TIER_NAMES,
+    ICE_REGEN_SUPPRESS_FRAMES,
     SNIPER_SPECIAL_TIER,
     TOWER_DAMAGE_TYPE,
     TOWER_PATH_UPGRADES,
@@ -55,6 +56,11 @@ def _sniper_path_lead_unlocked(tier_a: int) -> bool:
     return tier_a >= SNIPER_SPECIAL_TIER
 
 
+def _dart_path_lead_unlocked(tier_a: int) -> bool:
+    """Dart top path: sharpened darts pop lead."""
+    return tier_a >= SNIPER_SPECIAL_TIER
+
+
 def _sniper_path_camo_unlocked(tier_b: int) -> bool:
     """Middle path: camo detection."""
     return tier_b >= SNIPER_SPECIAL_TIER
@@ -65,7 +71,18 @@ def _sniper_path_flying_unlocked(tier_c: int) -> bool:
     return tier_c >= SNIPER_SPECIAL_TIER
 
 
+def _boom_path_camo_unlocked(tier_c: int) -> bool:
+    """Boom bottom path: camo detection."""
+    return tier_c >= SNIPER_SPECIAL_TIER
+
+
+def village_grants_ally_fortified_aura(v: MonkeyTower) -> bool:
+    """Top-path Village (tier 3+): allies in range deal bonus damage vs fortified bloons."""
+    return v.tower_type == "village" and v.tier_a >= SNIPER_SPECIAL_TIER
+
+
 def village_grants_ally_camo_aura(v: MonkeyTower) -> bool:
+    """Middle-path Village (tier 3+): allies in range gain camo / hidden detection."""
     return v.tower_type == "village" and v.tier_b >= SNIPER_SPECIAL_TIER
 
 
@@ -79,7 +96,7 @@ def tower_can_see_camo_with_villages(
     village_towers: list[MonkeyTower],
     global_range_pct: float,
 ) -> bool:
-    """Camo: Sniper middle path, or Monkey Village middle-path aura."""
+    """Camo: own tower perks (Sniper mid, Boom bot), or Monkey Village middle-path aura."""
     if tower.can_detect_camo():
         return True
     for v in village_towers:
@@ -101,6 +118,23 @@ def village_regen_damage_mult_for_tower(
     m = 1.0
     for v in village_towers:
         if not village_grants_ally_regen_aura(v):
+            continue
+        dx, dy = v.x - tower.x, v.y - tower.y
+        r = v.effective_range(global_range_pct)
+        if dx * dx + dy * dy <= r * r:
+            m = max(m, 1.07)
+    return m
+
+
+def village_fortified_damage_mult_for_tower(
+    tower: MonkeyTower,
+    village_towers: list[MonkeyTower],
+    global_range_pct: float,
+) -> float:
+    """While in a Village top-path aura, bonus damage vs fortified bloons (stacks best single aura)."""
+    m = 1.0
+    for v in village_towers:
+        if not village_grants_ally_fortified_aura(v):
             continue
         dx, dy = v.x - tower.x, v.y - tower.y
         r = v.effective_range(global_range_pct)
@@ -133,6 +167,7 @@ class Enemy:
     layer_max_hp: float = 0.0
     regen_layer_progress: float = 0.0
     leaked: bool = False
+    regen_suppressed_frames: int = 0
     _hp_speed_mult: float = field(default=1.0, init=False)
 
     def __post_init__(self) -> None:
@@ -215,7 +250,13 @@ class Enemy:
             self.hp = self.layer_max_hp
 
     def tick_regen(self) -> None:
-        if self.regen_per_frame <= 0 or not self.alive:
+        if not self.alive:
+            return
+        if self.regen_suppressed_frames > 0:
+            self.regen_suppressed_frames -= 1
+        if self.regen_per_frame <= 0:
+            return
+        if self.regen_suppressed_frames > 0:
             return
         self.hp = min(self.layer_max_hp, self.hp + self.regen_per_frame)
         if self.layers < self.max_layers:
@@ -243,6 +284,7 @@ class Projectile:
     tier_c: int = 0
     paragon: bool = False
     regen_village_mult: float = 1.0
+    fortified_village_mult: float = 1.0
     t: float = 0.0
     speed: float = 0.22  # 0..1 per frame
     done: bool = False
@@ -384,12 +426,14 @@ class MonkeyTower:
         return {"a": self.tier_a, "b": self.tier_b, "c": self.tier_c}[p]
 
     def can_detect_camo(self) -> bool:
-        """Sniper middle path (tier 3+): camo. Village aura handled in targeting."""
+        """Sniper middle path; Boom bottom path (tier 3+). Village middle aura in targeting."""
         if self.paragon:
             return True
-        if self.tower_type != "sniper":
-            return False
-        return _sniper_path_camo_unlocked(self.tier_b)
+        if self.tower_type == "sniper":
+            return _sniper_path_camo_unlocked(self.tier_b)
+        if self.tower_type == "boom":
+            return _boom_path_camo_unlocked(self.tier_c)
+        return False
 
     def can_detect_flying(self) -> bool:
         """Sniper bottom path (tier 3+): flying."""
@@ -400,11 +444,13 @@ class MonkeyTower:
         return _sniper_path_flying_unlocked(self.tier_c)
 
     def can_hit_lead(self) -> bool:
-        """Sniper top path (tier 3+) vs lead; Cannon/Super use damage type."""
+        """Dart/Sniper top path vs lead; Cannon/Super use damage type."""
         if self.paragon:
             return True
         if self.tower_type == "sniper":
             return _sniper_path_lead_unlocked(self.tier_a)
+        if self.tower_type == "dart":
+            return _dart_path_lead_unlocked(self.tier_a)
         dt = TOWER_DAMAGE_TYPE.get(self.tower_type, "sharp")
         return dt in ("explosive", "plasma")
 
@@ -413,12 +459,26 @@ class MonkeyTower:
         return True
 
     def modifier_unlocks_for_path(self, path: str) -> list[str]:
-        """Sniper: one bloon layer per path. Village: ally camo / anti-regen auras."""
+        """Path milestones for bloon tools (lead, ice regen pause, sniper layers, village auras)."""
         if self.tower_type == "village":
+            if path == "a" and self.tier_a < SNIPER_SPECIAL_TIER:
+                return [f"Ally +7% dmg vs fortified @ tier {SNIPER_SPECIAL_TIER}+ (Top)"]
             if path == "b" and self.tier_b < SNIPER_SPECIAL_TIER:
                 return [f"Ally camo vision @ tier {SNIPER_SPECIAL_TIER}+ (Middle)"]
             if path == "c" and self.tier_c < SNIPER_SPECIAL_TIER:
                 return [f"Ally vs-regen damage @ tier {SNIPER_SPECIAL_TIER}+ (Bottom)"]
+            return []
+        if self.tower_type == "dart":
+            if path == "a" and not _dart_path_lead_unlocked(self.tier_a):
+                return [f"Lead pop @ tier {SNIPER_SPECIAL_TIER}+ (Top)"]
+            return []
+        if self.tower_type == "ice":
+            if path == "b" and self.tier_b < SNIPER_SPECIAL_TIER:
+                return [f"Freeze regen heal on hit @ tier {SNIPER_SPECIAL_TIER}+ (Middle)"]
+            return []
+        if self.tower_type == "boom":
+            if path == "c" and self.tier_c < SNIPER_SPECIAL_TIER:
+                return [f"Camo detection @ tier {SNIPER_SPECIAL_TIER}+ (Bottom)"]
             return []
         if self.tower_type != "sniper":
             return []
@@ -521,10 +581,12 @@ class MonkeyTower:
 def lead_damage_multiplier(
     tower_type: str, tier_a: int, tier_b: int, tier_c: int, damage_type: str
 ) -> float:
-    """Lead layer: explosive/plasma always; Sniper needs top path tier 3+."""
+    """Lead layer: explosive/plasma; Dart/Sniper top path tier 3+."""
     _ = tier_b, tier_c
     if tower_type == "sniper":
         return 1.0 if _sniper_path_lead_unlocked(tier_a) else 0.0
+    if tower_type == "dart":
+        return 1.0 if _dart_path_lead_unlocked(tier_a) else 0.0
     if damage_type in ("explosive", "plasma"):
         return 1.0
     return 0.0
@@ -624,10 +686,22 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
             )
             if best.regen:
                 d *= proj.regen_village_mult
+            if best.fortified:
+                d *= proj.fortified_village_mult
             if d > 0:
+                was_regen = bool(best.regen)
                 best.apply_damage(d)
                 if proj.slow_pct > 0:
                     best.apply_slow(proj.slow_pct, proj.slow_frames)
+                if (
+                    was_regen
+                    and best.alive
+                    and proj.tower_kind == "ice"
+                    and (proj.paragon or proj.tier_b >= SNIPER_SPECIAL_TIER)
+                ):
+                    best.regen_suppressed_frames = max(
+                        best.regen_suppressed_frames, ICE_REGEN_SUPPRESS_FRAMES
+                    )
     else:
         for e in enemies:
             if not e.alive:
@@ -648,7 +722,19 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
                 )
                 if e.regen:
                     d *= proj.regen_village_mult
+                if e.fortified:
+                    d *= proj.fortified_village_mult
                 if d > 0:
+                    was_regen = bool(e.regen)
                     e.apply_damage(d)
                     if proj.slow_pct > 0:
                         e.apply_slow(proj.slow_pct, proj.slow_frames)
+                    if (
+                        was_regen
+                        and e.alive
+                        and proj.tower_kind == "ice"
+                        and (proj.paragon or proj.tier_b >= SNIPER_SPECIAL_TIER)
+                    ):
+                        e.regen_suppressed_frames = max(
+                            e.regen_suppressed_frames, ICE_REGEN_SUPPRESS_FRAMES
+                        )

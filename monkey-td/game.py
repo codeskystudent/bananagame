@@ -59,6 +59,7 @@ from entities import (
     enemy_reward_multiplier,
     find_target,
     tower_can_see_camo_with_villages,
+    village_fortified_damage_mult_for_tower,
     village_regen_damage_mult_for_tower,
 )
 from maps import MAP_DEFINITIONS, build_waypoints, map_count, map_grass
@@ -80,7 +81,9 @@ from ui import (
     draw_tower_shop,
     draw_upgrade_panel,
     draw_enemy_sprite,
+    draw_enemy_hover_tooltip,
     draw_wave_break,
+    enemy_under_mouse,
     init_fonts,
     map_button_rect,
     mode_button_rect,
@@ -566,6 +569,7 @@ class Game:
                 tier_c=t.tier_c,
                 paragon=t.paragon,
                 regen_village_mult=village_regen_damage_mult_for_tower(t, villages, gr),
+                fortified_village_mult=village_fortified_damage_mult_for_tower(t, villages, gr),
                 speed=(
                     0.55
                     if t.tower_type == "sniper"
@@ -932,6 +936,13 @@ class Game:
 
         if self.paused:
             self._draw_overlay("Paused [P]", (200, 200, 200))
+
+        if self.state != "map_select":
+            mx, my = pygame.mouse.get_pos()
+            if mx < PLAY_WIDTH:
+                hover_enemy = enemy_under_mouse(self.enemies, mx, my)
+                if hover_enemy is not None:
+                    draw_enemy_hover_tooltip(self.screen, hover_enemy, self.font_small, mx, my)
 
         pygame.display.flip()
 
