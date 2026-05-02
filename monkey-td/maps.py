@@ -192,7 +192,28 @@ def build_waypoints(index: int) -> list[tuple[float, float]]:
     if index < 0 or index >= len(MAP_DEFINITIONS):
         index = 0
     coarse = MAP_DEFINITIONS[index]["coarse"]
-    return densify(coarse, 7)
+    # Fit legacy-authored map paths to the current playfield size so maps
+    # stay centered and use available space on larger displays.
+    xs = [p[0] for p in coarse]
+    ys = [p[1] for p in coarse]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    src_w = max(1.0, max_x - min_x)
+    src_h = max(1.0, max_y - min_y)
+
+    pad_x = 40.0
+    pad_y = 64.0
+    dst_w = max(1.0, PLAY_WIDTH - 2 * pad_x)
+    dst_h = max(1.0, PLAY_HEIGHT - 2 * pad_y)
+    scale = min(dst_w / src_w, dst_h / src_h)
+
+    fit_w = src_w * scale
+    fit_h = src_h * scale
+    off_x = (PLAY_WIDTH - fit_w) * 0.5
+    off_y = (PLAY_HEIGHT - fit_h) * 0.5
+
+    fitted = [((x - min_x) * scale + off_x, (y - min_y) * scale + off_y) for x, y in coarse]
+    return densify(fitted, 7)
 
 
 def map_grass(index: int) -> tuple[int, int, int]:

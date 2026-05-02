@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pygame
 
@@ -12,6 +13,8 @@ from config import (
     COLOR_UI_ACCENT,
     CROSSPATH_MAJOR_TIER,
     DIFFICULTY_SETTINGS,
+    SNIPER_SPECIAL_TIER,
+    TOWER_DAMAGE_TYPE,
     TOWER_SHOP_ORDER,
     CROSSPATH_OTHER_MAX,
     GLOBAL_UPGRADE_COST_MULT,
@@ -30,39 +33,249 @@ from config import (
 from entities import Enemy, MonkeyTower
 from maps import MAP_DEFINITIONS
 
+# Sidebar layout — shared by drawing and hit-testing (game.handle_click).
+SIDEBAR_PAD_X = 18
+TOWER_ROW_HEIGHT = 64
+TOWER_ROW_GAP = 14
+TOWER_ROW_STEP = TOWER_ROW_HEIGHT + TOWER_ROW_GAP
+TOWER_SHOP_TOP = 134
+
+UPGRADE_PANEL_Y0 = 518
+UPGRADE_ROW_HEIGHT = 80
+UPGRADE_ROW_STEP = 92
+UPGRADE_PARAGON_GAP = 16
+_STATS_LINES = 5
+# Tower stats block above path rows — keep draw + ``compute_upgrade_paths_row_y`` aligned.
+_UPGRADE_STAT_TOP_PAD = 8
+_UPGRADE_STAT_LINE_EXTRA = 8
+_UPGRADE_STAT_GAP_BEFORE_PATHS = 22
+
+
+def _upgrade_panel_stat_metrics(font_small: pygame.font.Font) -> tuple[int, int]:
+    """Returns ``line_skip``, ``text_top`` (absolute Y for first stat line)."""
+    line_skip = font_small.get_linesize() + _UPGRADE_STAT_LINE_EXTRA
+    text_top = UPGRADE_PANEL_Y0 + _UPGRADE_STAT_TOP_PAD
+    return line_skip, text_top
+
+
+PATH_UPGRADE_STAT_LABEL: dict[str, str] = {
+    "damage": "Damage",
+    "range": "Range",
+    "firerate": "Fire rate",
+    "splash": "Splash",
+    "slow": "Slow",
+    "farm_mult": "Farm mult",
+    "farm_mult_b": "Farm bonus",
+    "farm_flat": "Farm flat",
+}
+
+
+def _rounded_panel(
+    screen: pygame.Surface,
+    rect: pygame.Rect,
+    fill: tuple[int, int, int],
+    *,
+    border: tuple[int, int, int] | None = None,
+    border_width: int = 1,
+    border_radius: int = 0,
+) -> None:
+    pygame.draw.rect(screen, fill, rect, border_radius=border_radius)
+    if border is not None:
+        pygame.draw.rect(screen, border, rect, border_width, border_radius=border_radius)
+
+
+def _draw_labeled_toggle_button_row(
+    screen: pygame.Surface,
+    font: pygame.font.Font,
+    items: list[tuple[str, str]],
+    rect_at_index: Callable[[int], pygame.Rect],
+    selected_key: str,
+) -> None:
+    for i, (key, label) in enumerate(items):
+        r = rect_at_index(i)
+        sel = selected_key == key
+        fill = (55, 85, 130) if sel else (42, 52, 68)
+        stroke = COLOR_UI_ACCENT if sel else (70, 82, 100)
+        _rounded_panel(screen, r, fill, border=stroke, border_width=2, border_radius=10)
+        lx = r.x + (r.width - font.size(label)[0]) // 2
+        ly = r.y + (r.height - font.get_height()) // 2
+        draw_text(screen, font, label, lx, ly)
+
+
+def format_path_upgrade_effect(stat: str, val: float) -> str:
+    label = PATH_UPGRADE_STAT_LABEL.get(stat, stat)
+    if stat == "farm_flat":
+        return f"{label} +{int(val)} / tier"
+    if stat == "slow":
+        return f"{label} +{int(val * 100)}% / tier"
+    return f"{label} +{val * 100:.1f}% / tier"
+
+
+def tower_upgrade_stat_lines(tower: MonkeyTower) -> list[tuple[str, tuple[int, int, int]]]:
+    """One text/colour pair per line; length must match ``_STATS_LINES``."""
+    dp = tower.dominant_path()
+    lane_of = {"a": 0, "b": 1, "c": 2}
+    lane_label = PATH_LANE_NAMES[lane_of[dp]] if dp else "—"
+
+    base = tower.base()
+    dmg_pct = (
+        max(0.0, (tower.effective_damage(0.0) / max(1.0, float(base["damage"])) - 1.0) * 100.0)
+        if float(base["damage"]) > 0
+        else 0.0
+    )
+    rng_pct = (
+        max(0.0, (tower.effective_range(0.0) / max(1.0, float(base["range"])) - 1.0) * 100.0)
+        if float(base["range"]) > 0
+        else 0.0
+    )
+    fr_pct = max(0.0, (float(base["cooldown"]) / max(1.0, float(tower.effective_cooldown())) - 1.0) * 100.0)
+
+    if tower.tower_type == "sniper":
+        if tower.paragon:
+            mods_txt = "Top: lead · Mid: camo · Bot: flying (Paragon)"
+            mods_col: tuple[int, int, int] = (158, 208, 168)
+        else:
+            have = []
+            if tower.tier_a >= SNIPER_SPECIAL_TIER:
+                have.append("lead")
+            if tower.tier_b >= SNIPER_SPECIAL_TIER:
+                have.append("camo")
+            if tower.tier_c >= SNIPER_SPECIAL_TIER:
+                have.append("flying")
+            if have:
+                mods_txt = (
+                    "Paths unlocked: "
+                    + " · ".join(have)
+                    + " · regen bloons: damaged by all (they heal over time)"
+                )
+                mods_col = (158, 208, 168)
+            else:
+                mods_txt = (
+                    f"Each path adds one layer @ tier {SNIPER_SPECIAL_TIER}+ "
+                    "(Top=lead · Mid=camo · Bot=flying)"
+                )
+                mods_col = (190, 175, 145)
+    elif tower.tower_type == "village":
+        mods_txt = (
+            f"Middle t{SNIPER_SPECIAL_TIER}+: allies gain camo vision · "
+            f"Bottom t{SNIPER_SPECIAL_TIER}+: allies +7% dmg vs regen (in aura)"
+        )
+        mods_col = (175, 195, 215)
+    else:
+        dt = TOWER_DAMAGE_TYPE.get(tower.tower_type, "sharp")
+        lead_note = "explosive/plasma pop lead" if dt in ("explosive", "plasma") else "no lead pop (sharp/cold)"
+        mods_txt = (
+            f"{lead_note} · camo: Sniper mid or Village mid aura · "
+            f"flying: Sniper bot · regen: always damaged (heals)"
+        )
+        mods_col = (150, 175, 195)
+
+    return [
+        (tower.display_name(), COLOR_TEXT),
+        (
+            f"{PATH_LANE_NAMES[0]}/{PATH_LANE_NAMES[1]}/{PATH_LANE_NAMES[2]}  ·  lead {lane_label}",
+            (130, 165, 188),
+        ),
+        (
+            f"Crosspath: one t{CROSSPATH_MAJOR_TIER}+ path, others ≤t{CROSSPATH_OTHER_MAX}",
+            (110, 150, 175),
+        ),
+        (
+            f"Upg bonus: dmg +{int(dmg_pct)}%  rng +{int(rng_pct)}%  fire +{int(fr_pct)}%",
+            (150, 198, 220),
+        ),
+        ("Bloon handling: " + mods_txt, mods_col),
+    ]
+
+
+def _upgrade_row_fill(maxed: bool, locked: bool, can_buy: bool) -> tuple[int, int, int]:
+    if locked:
+        return (36, 34, 42)
+    if not can_buy and not maxed:
+        return (40, 36, 38)
+    if can_buy or maxed:
+        return (38, 48, 62)
+    return (34, 38, 46)
+
+
+def _draw_paragon_upgrade_slot(
+    screen: pygame.Surface,
+    font_small: pygame.font.Font,
+    pr: pygame.Rect,
+    tower: MonkeyTower,
+    cash: int,
+) -> None:
+    if tower.paragon:
+        _rounded_panel(screen, pr, (52, 44, 72), border=(210, 160, 255), border_width=2, border_radius=6)
+        draw_text(screen, font_small, "PARAGON", pr.x + 10, pr.y + 10, (235, 215, 255))
+        draw_text(screen, font_small, "Apex power — maxed", pr.x + 10, pr.y + 30, (175, 160, 195))
+        return
+    if tower.can_paragon():
+        pc = tower.paragon_cost()
+        can_p = pc is not None and cash >= pc
+        fill = (48, 40, 78) if can_p else (36, 34, 42)
+        stroke = (190, 130, 255) if can_p else (85, 72, 95)
+        _rounded_panel(screen, pr, fill, border=stroke, border_width=2, border_radius=6)
+        draw_text(screen, font_small, "[G] Paragon", pr.x + 10, pr.y + 10, (225, 195, 255))
+        if pc is not None:
+            draw_text(
+                screen,
+                font_small,
+                f"${pc}",
+                pr.x + 10,
+                pr.y + 30,
+                (210, 190, 235) if can_p else (145, 125, 155),
+            )
+        return
+    _rounded_panel(screen, pr, (32, 34, 40), border=(55, 60, 70), border_radius=6)
+    draw_text(
+        screen,
+        font_small,
+        "Paragon: max paths (6/2/2)",
+        pr.x + 10,
+        pr.y + 18,
+        (105, 115, 130),
+    )
+
+
+def compute_upgrade_paths_row_y(font_small: pygame.font.Font) -> int:
+    """Y of the first path upgrade row; must match ``draw_upgrade_panel``."""
+    line_skip, text_top = _upgrade_panel_stat_metrics(font_small)
+    return text_top + _STATS_LINES * line_skip + _UPGRADE_STAT_GAP_BEFORE_PATHS
+
 
 def difficulty_button_rect(index: int) -> pygame.Rect:
     """Easy / Medium / Hard row above bottom margin."""
-    w = 200
-    h = 46
-    gap = 12
+    w = 220
+    h = 52
+    gap = 18
     total = 4 * w + 3 * gap
     x0 = (WINDOW_WIDTH - total) // 2
-    y = WINDOW_HEIGHT - 78
+    y = WINDOW_HEIGHT - 92
     return pygame.Rect(x0 + index * (w + gap), y, w, h)
 
 
 def mode_button_rect(index: int) -> pygame.Rect:
     """Mode row: Normal / Sandbox above difficulty buttons."""
-    w = 210
-    h = 40
-    gap = 14
+    w = 236
+    h = 46
+    gap = 18
     total = 2 * w + gap
     x0 = (WINDOW_WIDTH - total) // 2
-    y = WINDOW_HEIGHT - 132
+    y = WINDOW_HEIGHT - 156
     return pygame.Rect(x0 + index * (w + gap), y, w, h)
 
 
 def map_button_rect(index: int) -> pygame.Rect:
     """Full-window map picker: 2 columns × 5 rows."""
     cols = 2
-    pad = 24
+    pad = 34
     bw = (WINDOW_WIDTH - pad * 3) // 2
-    bh = 68
+    bh = 78
     row = index // cols
     col = index % cols
     x = pad + col * (bw + pad)
-    y = 92 + row * (bh + 12)
+    y = 108 + row * (bh + 16)
     return pygame.Rect(x, y, bw, bh)
 
 
@@ -75,82 +288,50 @@ def draw_map_select(
     selected_mode: str,
 ) -> None:
     screen.fill((22, 28, 38))
-    draw_text(screen, font_title, "Choose a map", 36, 28, COLOR_UI_ACCENT)
+    draw_text(screen, font_title, "Choose a map", 44, 30, COLOR_UI_ACCENT)
     draw_text(
         screen,
         font_small,
         "Pick difficulty, then a map  ·  Camo / Lead / Fortified / Regen bloons appear in later waves",
-        36,
-        54,
+        44,
+        60,
         (150, 165, 185),
     )
     for i, m in enumerate(MAP_DEFINITIONS):
         r = map_button_rect(i)
         g = m["grass"]
         edge = _lerp_color(g, (255, 255, 255), 0.15)
-        pygame.draw.rect(screen, (38, 46, 58), r, border_radius=10)
-        pygame.draw.rect(screen, edge, r, 2, border_radius=10)
+        _rounded_panel(screen, r, (38, 46, 58), border=edge, border_width=2, border_radius=10)
         preview = pygame.Surface((40, 40))
         preview.fill(g)
         screen.blit(preview, (r.x + 10, r.y + 11))
-        draw_text(screen, font, m["name"], r.x + 58, r.y + 12)
-        draw_text(screen, font_small, m["subtitle"], r.x + 58, r.y + 36, (170, 185, 200))
+        draw_text(screen, font, m["name"], r.x + 62, r.y + 14)
+        draw_text(screen, font_small, m["subtitle"], r.x + 62, r.y + 42, (170, 185, 200))
 
-    order = ("easy", "medium", "hard", "impossible")
-    for i, dk in enumerate(order):
-        r = difficulty_button_rect(i)
-        sel = selected_difficulty == dk
-        pygame.draw.rect(
-            screen,
-            (55, 85, 130) if sel else (42, 52, 68),
-            r,
-            border_radius=10,
-        )
-        pygame.draw.rect(
-            screen,
-            COLOR_UI_ACCENT if sel else (70, 82, 100),
-            r,
-            2,
-            border_radius=10,
-        )
-        label = str(DIFFICULTY_SETTINGS[dk]["label"])
-        lx = r.x + (r.width - font.size(label)[0]) // 2
-        draw_text(screen, font, label, lx, r.y + 13)
-    mode_order = ("normal", "sandbox")
-    mode_labels = {"normal": "Normal", "sandbox": "Sandbox"}
-    for i, mk in enumerate(mode_order):
-        r = mode_button_rect(i)
-        sel = selected_mode == mk
-        pygame.draw.rect(
-            screen,
-            (55, 85, 130) if sel else (42, 52, 68),
-            r,
-            border_radius=10,
-        )
-        pygame.draw.rect(
-            screen,
-            COLOR_UI_ACCENT if sel else (70, 82, 100),
-            r,
-            2,
-            border_radius=10,
-        )
-        draw_text(screen, font, mode_labels[mk], r.x + 60, r.y + 10)
+    diff_items = [
+        (dk, str(DIFFICULTY_SETTINGS[dk]["label"]))
+        for dk in ("easy", "medium", "hard", "impossible")
+    ]
+    _draw_labeled_toggle_button_row(screen, font, diff_items, difficulty_button_rect, selected_difficulty)
+    mode_items = [("normal", "Normal"), ("sandbox", "Sandbox")]
+    _draw_labeled_toggle_button_row(screen, font, mode_items, mode_button_rect, selected_mode)
     draw_text(
         screen,
         font_small,
         "[1] [2] [3] [4] difficulty  ·  [M] mode  ·  [R] title  ·  Esc quit",
-        36,
-        WINDOW_HEIGHT - 26,
+        44,
+        WINDOW_HEIGHT - 30,
         (130, 145, 165),
     )
 
 
 def init_fonts() -> tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font]:
     pygame.font.init()
+    s = max(1.0, min(1.35, WINDOW_HEIGHT / 768.0))
     return (
-        pygame.font.SysFont("segoeui", 18),
-        pygame.font.SysFont("segoeui", 14),
-        pygame.font.SysFont("segoeui", 22, bold=True),
+        pygame.font.SysFont("segoeui", int(18 * s)),
+        pygame.font.SysFont("segoeui", int(14 * s)),
+        pygame.font.SysFont("segoeui", int(22 * s), bold=True),
     )
 
 
@@ -746,10 +927,11 @@ def draw_play_border(screen: pygame.Surface) -> None:
 def draw_sidebar_bg(screen: pygame.Surface) -> None:
     pygame.draw.rect(screen, COLOR_HUD_BG, (PLAY_WIDTH, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT))
     pygame.draw.line(screen, (48, 56, 68), (PLAY_WIDTH, 0), (PLAY_WIDTH, WINDOW_HEIGHT), 2)
-    header = pygame.Surface((SIDEBAR_WIDTH, 82), pygame.SRCALPHA)
+    header_h = 86
+    header = pygame.Surface((SIDEBAR_WIDTH, header_h), pygame.SRCALPHA)
     header.fill((26, 32, 42, 255))
     screen.blit(header, (PLAY_WIDTH, 0))
-    pygame.draw.line(screen, (55, 65, 80), (PLAY_WIDTH, 82), (WINDOW_WIDTH, 82), 1)
+    pygame.draw.line(screen, (55, 65, 80), (PLAY_WIDTH, header_h), (WINDOW_WIDTH, header_h), 1)
 
 
 def draw_text(
@@ -803,10 +985,10 @@ HUD_SPEED_CHOICES = (1, 2, 3, 8)
 def speed_button_rect(index: int) -> pygame.Rect:
     """Clickable speed buttons left-to-right: 1x, 2x, 3x, 8x (index 0..3)."""
     pad = 10
-    y = PLAY_HEIGHT - 40
-    w, h = 46, 28
-    gap = 7
-    x0 = pad + 182
+    y = PLAY_HEIGHT - 44
+    w, h = 54, 32
+    gap = 10
+    x0 = pad + 228
     return pygame.Rect(x0 + index * (w + gap), y, w, h)
 
 
@@ -823,46 +1005,48 @@ def draw_hud(
     sandbox: bool = False,
     sandbox_flags_label: str = "",
 ) -> None:
-    pad = 10
-    hud = pygame.Surface((430, 132), pygame.SRCALPHA)
+    pad = 16
+    hud = pygame.Surface((540, 162), pygame.SRCALPHA)
     hud.fill((12, 18, 24, 200))
     screen.blit(hud, (pad - 4, pad - 4))
-    pygame.draw.rect(screen, (55, 75, 95), (pad - 4, pad - 4, 430, 132), 1, border_radius=8)
+    pygame.draw.rect(screen, (55, 75, 95), (pad - 4, pad - 4, 540, 162), 1, border_radius=10)
+    line_main = font.get_linesize() + 6
     draw_text(screen, font, f"Base HP  {base_hp}", pad, pad)
-    draw_text(screen, font, f"Cash  ${cash}", pad, pad + 28)
+    draw_text(screen, font, f"Cash  ${cash}", pad, pad + line_main)
+    sub_y = pad + line_main * 2 + 8
     if sandbox:
-        draw_text(screen, font_small, "Sandbox  ·  freeplay test mode", pad, pad + 60)
-        draw_text(screen, font_small, sandbox_flags_label, pad, pad + 82, (170, 205, 190))
+        draw_text(screen, font_small, "Sandbox  ·  freeplay test mode", pad, sub_y)
+        draw_text(screen, font_small, sandbox_flags_label, pad, sub_y + font_small.get_linesize() + 4, (170, 205, 190))
     else:
-        draw_text(screen, font_small, f"Wave {wave_display}  ·  {wave_state}", pad, pad + 60)
-    draw_text_fit(screen, font_small, "Speed · [F] cycles 1x→8x", pad, PLAY_HEIGHT - 64, 168)
+        draw_text(screen, font_small, f"Wave {wave_display}  ·  {wave_state}", pad, sub_y)
+    draw_text_fit(screen, font_small, "Speed · [F] cycles 1x→8x", pad, PLAY_HEIGHT - 70, 206)
     draw_text(
         screen,
         font_small,
         f"Auto wave [U]: {'ON' if auto_wave_skip else 'OFF'}",
-        pad + 178,
-        PLAY_HEIGHT - 64,
+        pad + 238,
+        PLAY_HEIGHT - 70,
         (160, 220, 170) if auto_wave_skip else (170, 182, 198),
     )
     for i, sp in enumerate(HUD_SPEED_CHOICES):
         r = speed_button_rect(i)
         sel = game_speed == sp
         bg = (70, 120, 200) if sel else (38, 48, 62)
-        pygame.draw.rect(screen, bg, r, border_radius=6)
-        pygame.draw.rect(screen, (140, 190, 255) if sel else (70, 80, 95), r, 1, border_radius=6)
+        stroke = (140, 190, 255) if sel else (70, 80, 95)
+        _rounded_panel(screen, r, bg, border=stroke, border_radius=6)
         label = f"{sp}x"
-        tx = r.x + (13 if sp < 10 else 10)
-        draw_text(screen, font_small, label, tx, r.y + 6, (235, 240, 250) if sel else (180, 190, 205))
+        tx = r.x + (16 if sp < 10 else 13)
+        draw_text(screen, font_small, label, tx, r.y + 8, (235, 240, 250) if sel else (180, 190, 205))
     hud_keys = "Keys [1][2][3][8]   Pause [P]"
     if sandbox:
         hud_keys = "Spawn [Q/W/E/R]  flags [J/K/L/N]  x5 hold Shift"
-    draw_text_fit(screen, font_small, hud_keys, pad, PLAY_HEIGHT - 28, 430 - 2 * pad)
+    draw_text_fit(screen, font_small, hud_keys, pad, PLAY_HEIGHT - 32, 540 - 2 * pad)
 
 
 def tower_button_rect(index: int, scroll_px: int = 0) -> pygame.Rect:
-    x0 = PLAY_WIDTH + 10
-    y0 = 116 + index * 48 - scroll_px
-    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 46)
+    x0 = PLAY_WIDTH + SIDEBAR_PAD_X
+    y0 = TOWER_SHOP_TOP + index * TOWER_ROW_STEP - scroll_px
+    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 2 * SIDEBAR_PAD_X, TOWER_ROW_HEIGHT)
 
 
 def draw_tower_shop(
@@ -873,8 +1057,8 @@ def draw_tower_shop(
     scroll_px: int = 0,
 ) -> None:
     # Only the build list area scrolls; keep upgrades area fixed.
-    build_view_top = 82
-    build_view_bottom = UPGRADE_PANEL_Y0 - 8
+    build_view_top = 92
+    build_view_bottom = UPGRADE_PANEL_Y0 - 14
     old_clip = screen.get_clip()
     screen.set_clip(
         pygame.Rect(
@@ -884,45 +1068,39 @@ def draw_tower_shop(
             max(0, build_view_bottom - build_view_top),
         )
     )
-    draw_text(screen, font, "Build", PLAY_WIDTH + 14, 86 - scroll_px, COLOR_UI_ACCENT)
+    draw_text(screen, font, "Build", PLAY_WIDTH + SIDEBAR_PAD_X, 96 - scroll_px, COLOR_UI_ACCENT)
     for i, key in enumerate(TOWER_SHOP_ORDER):
         r = tower_button_rect(i, scroll_px)
         base = TOWER_TYPES[key]
         sel = selected_type == key
         bg = (48, 58, 74) if sel else (32, 38, 48)
-        pygame.draw.rect(screen, bg, r, border_radius=8)
         brd = (110, 170, 240) if sel else (58, 68, 82)
-        pygame.draw.rect(screen, brd, r, 1, border_radius=8)
-        draw_tower_icon(screen, r.x + 22, r.centery, key, 14)
-        draw_text_fit(screen, font_small, base["name"], r.x + 40, r.y + 7, r.width - 100)
+        _rounded_panel(screen, r, bg, border=brd, border_radius=8)
+        draw_tower_icon(screen, r.x + 24, r.centery, key, 14)
+        name_y = r.y + 11
+        draw_text_fit(screen, font_small, base["name"], r.x + 48, name_y, r.width - 112)
         cost_text = f"${base['cost']}"
-        cost_x = r.right - 10 - font_small.size(cost_text)[0]
-        draw_text(screen, font_small, cost_text, cost_x, r.y + 14, (200, 215, 232))
+        cost_x = r.right - 12 - font_small.size(cost_text)[0]
+        draw_text(screen, font_small, cost_text, cost_x, r.y + 34, (200, 215, 232))
     screen.set_clip(old_clip)
 
 
 def upgrade_row_rect(y_start: int, index: int, scroll_px: int = 0) -> pygame.Rect:
     """index 0,1,2 for paths A,B,C."""
-    x0 = PLAY_WIDTH + 10
-    y0 = y_start + index * 52 - scroll_px
-    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 20, 48)
+    x0 = PLAY_WIDTH + SIDEBAR_PAD_X
+    y0 = y_start + index * UPGRADE_ROW_STEP - scroll_px
+    return pygame.Rect(x0, y0, SIDEBAR_WIDTH - 2 * SIDEBAR_PAD_X, UPGRADE_ROW_HEIGHT)
 
 
-# Align with draw_upgrade_panel tower block (must match game.handle_click upgrade hits).
-# Nine build rows end at y≈460; keep upgrades below the shop list.
-UPGRADE_PANEL_Y0 = 448
-UPGRADE_PATHS_ROW_Y = UPGRADE_PANEL_Y0 + 52
-
-
-def paragon_upgrade_rect(paths_row_y: int = UPGRADE_PATHS_ROW_Y, scroll_px: int = 0) -> pygame.Rect:
-    x0 = PLAY_WIDTH + 10
-    y = paths_row_y + 3 * 52 + 12 - scroll_px
-    return pygame.Rect(x0, y, SIDEBAR_WIDTH - 20, 44)
+def paragon_upgrade_rect(paths_row_y: int, scroll_px: int = 0) -> pygame.Rect:
+    x0 = PLAY_WIDTH + SIDEBAR_PAD_X
+    y = paths_row_y + 3 * UPGRADE_ROW_STEP + UPGRADE_PARAGON_GAP - scroll_px
+    return pygame.Rect(x0, y, SIDEBAR_WIDTH - 2 * SIDEBAR_PAD_X, 60)
 
 
 def sell_tower_button_rect(scroll_px: int = 0) -> pygame.Rect:
     """Top-right of the upgrades panel when a tower is selected."""
-    return pygame.Rect(WINDOW_WIDTH - 114, UPGRADE_PANEL_Y0 - 32 - scroll_px, 108, 30)
+    return pygame.Rect(WINDOW_WIDTH - SIDEBAR_PAD_X - 118, UPGRADE_PANEL_Y0 - 34 - scroll_px, 118, 32)
 
 
 def draw_upgrade_panel(
@@ -937,129 +1115,62 @@ def draw_upgrade_panel(
     y0 = UPGRADE_PANEL_Y0
     panel_top = y0 - 30
     panel_h = WINDOW_HEIGHT - panel_top - 10
-    pygame.draw.rect(
-        screen,
-        (28, 34, 44),
-        (PLAY_WIDTH + 8, panel_top, SIDEBAR_WIDTH - 16, panel_h),
-        border_radius=8,
-    )
-    pygame.draw.rect(
-        screen,
-        (48, 58, 72),
-        (PLAY_WIDTH + 8, panel_top, SIDEBAR_WIDTH - 16, panel_h),
-        1,
-        border_radius=8,
-    )
+    inset = 10
+    panel_rect = pygame.Rect(PLAY_WIDTH + inset, panel_top, SIDEBAR_WIDTH - 2 * inset, panel_h)
+    _rounded_panel(screen, panel_rect, (28, 34, 44), border=(48, 58, 72), border_radius=8)
     old_clip = screen.get_clip()
     screen.set_clip(pygame.Rect(PLAY_WIDTH, panel_top, SIDEBAR_WIDTH, WINDOW_HEIGHT - panel_top))
-    draw_text(screen, font, "Upgrades", PLAY_WIDTH + 14, y0 - 26 - scroll_px, COLOR_UI_ACCENT)
+    draw_text(screen, font, "Upgrades", PLAY_WIDTH + SIDEBAR_PAD_X, y0 - 26 - scroll_px, COLOR_UI_ACCENT)
     if tower is None:
-        draw_text(screen, font_small, "Select a tower", PLAY_WIDTH + 14, y0 + 4 - scroll_px, (160, 170, 185))
+        draw_text(
+            screen,
+            font_small,
+            "Select a tower",
+            PLAY_WIDTH + SIDEBAR_PAD_X,
+            y0 + 6 - scroll_px,
+            (160, 170, 185),
+        )
         screen.set_clip(old_clip)
         return
     sr = sell_tower_button_rect(scroll_px)
-    pygame.draw.rect(screen, (52, 40, 46), sr, border_radius=6)
-    pygame.draw.rect(screen, (220, 140, 140), sr, 2, border_radius=6)
+    _rounded_panel(screen, sr, (52, 40, 46), border=(220, 140, 140), border_width=2, border_radius=6)
     ref = tower.sell_refund_amount()
-    draw_text(screen, font_small, f"Sell [X]", sr.x + 10, sr.y + 4, (255, 215, 215))
-    draw_text(screen, font_small, f"+${ref}", sr.x + 10, sr.y + 16, (185, 235, 195))
-    dp = tower.dominant_path()
-    lane_of = {"a": 0, "b": 1, "c": 2}
-    lane_label = PATH_LANE_NAMES[lane_of[dp]] if dp else "—"
-    draw_tower_icon(screen, PLAY_WIDTH + 28, y0 + 8 - scroll_px, tower.tower_type, 12, tower=tower)
-    text_x = PLAY_WIDTH + 48
-    text_w = WINDOW_WIDTH - text_x - 12
-    draw_text_fit(screen, font_small, tower.display_name(), text_x, y0 + 2 - scroll_px, text_w)
-    draw_text_fit(
-        screen,
-        font_small,
-        f"{PATH_LANE_NAMES[0]}/{PATH_LANE_NAMES[1]}/{PATH_LANE_NAMES[2]}  ·  lead {lane_label}",
-        text_x,
-        y0 + 18 - scroll_px,
-        text_w,
-        (130, 165, 188),
-    )
-    draw_text_fit(
-        screen,
-        font_small,
-        f"Crosspath: one t{CROSSPATH_MAJOR_TIER}+ path, others ≤t{CROSSPATH_OTHER_MAX}",
-        text_x,
-        y0 + 32 - scroll_px,
-        text_w,
-        (110, 150, 175),
-    )
+    draw_text(screen, font_small, "Sell [X]", sr.x + 12, sr.y + 5, (255, 215, 215))
+    draw_text(screen, font_small, f"+${ref}", sr.x + 12, sr.y + 17, (185, 235, 195))
+    line_skip, text_top = _upgrade_panel_stat_metrics(font_small)
+    text_x = PLAY_WIDTH + 54
+    text_w = WINDOW_WIDTH - text_x - SIDEBAR_PAD_X
+    draw_tower_icon(screen, PLAY_WIDTH + 30, text_top + 14 - scroll_px, tower.tower_type, 12, tower=tower)
 
-    base = tower.base()
-    dmg_pct = max(0.0, (tower.effective_damage(0.0) / max(1.0, float(base["damage"])) - 1.0) * 100.0) if float(base["damage"]) > 0 else 0.0
-    rng_pct = max(0.0, (tower.effective_range(0.0) / max(1.0, float(base["range"])) - 1.0) * 100.0) if float(base["range"]) > 0 else 0.0
-    fr_pct = max(0.0, (float(base["cooldown"]) / max(1.0, float(tower.effective_cooldown())) - 1.0) * 100.0)
-    draw_text_fit(
-        screen,
-        font_small,
-        f"Upg bonus: dmg +{int(dmg_pct)}%  rng +{int(rng_pct)}%  fire +{int(fr_pct)}%",
-        text_x,
-        y0 + 46 - scroll_px,
-        text_w,
-        (150, 198, 220),
-    )
-    mod_hits: list[str] = []
-    if tower.can_detect_camo():
-        mod_hits.append("camo")
-    if tower.can_detect_flying():
-        mod_hits.append("flying")
-    if tower.can_hit_lead():
-        mod_hits.append("lead")
-    if tower.can_hit_regen():
-        mod_hits.append("regen")
-    mods_txt = "none" if not mod_hits else ", ".join(mod_hits)
-    draw_text_fit(
-        screen,
-        font_small,
-        f"Modifiers hit ({len(mod_hits)}): {mods_txt}",
-        text_x,
-        y0 + 60 - scroll_px,
-        text_w,
-        (158, 188, 158),
-    )
+    stat_lines = tower_upgrade_stat_lines(tower)
+    for i, (txt, col) in enumerate(stat_lines):
+        draw_text_fit(
+            screen,
+            font_small,
+            txt,
+            text_x,
+            text_top + i * line_skip - scroll_px,
+            text_w,
+            col,
+        )
+
+    row_y = compute_upgrade_paths_row_y(font_small)
     paths = TOWER_PATH_UPGRADES[tower.tower_type]
     ca, cb, cc = tower.upgrade_cost_a(), tower.upgrade_cost_b(), tower.upgrade_cost_c()
-    stat_label = {
-        "damage": "Damage",
-        "range": "Range",
-        "firerate": "Fire rate",
-        "splash": "Splash",
-        "slow": "Slow",
-        "farm_mult": "Farm mult",
-        "farm_mult_b": "Farm bonus",
-        "farm_flat": "Farm flat",
-    }
 
-    def effect_text(stat: str, val: float) -> str:
-        if stat == "farm_flat":
-            return f"{stat_label.get(stat, stat)} +{int(val)} / tier"
-        if stat == "slow":
-            return f"{stat_label.get(stat, stat)} +{int(val * 100)}% / tier"
-        return f"{stat_label.get(stat, stat)} +{val * 100:.1f}% / tier"
-    row_y = y0 + 90
     rows = [
-        ("A", PATH_LANE_NAMES[0], paths["a"][0], paths["a"][1], float(paths["a"][2]), tower.tier_a, ca, 0),
-        ("B", PATH_LANE_NAMES[1], paths["b"][0], paths["b"][1], float(paths["b"][2]), tower.tier_b, cb, 1),
-        ("C", PATH_LANE_NAMES[2], paths["c"][0], paths["c"][1], float(paths["c"][2]), tower.tier_c, cc, 2),
+        ("A", "a", PATH_LANE_NAMES[0], paths["a"][0], paths["a"][1], float(paths["a"][2]), tower.tier_a, ca, 0),
+        ("B", "b", PATH_LANE_NAMES[1], paths["b"][0], paths["b"][1], float(paths["b"][2]), tower.tier_b, cb, 1),
+        ("C", "c", PATH_LANE_NAMES[2], paths["c"][0], paths["c"][1], float(paths["c"][2]), tower.tier_c, cc, 2),
     ]
     mx = tower.max_tier()
-    for key, lane, name, stat, stat_val, tier, cost, ri in rows:
+    for key, path_key, lane, name, stat, stat_val, tier, cost, ri in rows:
         rr = upgrade_row_rect(row_y, ri, scroll_px)
         maxed = tier >= mx
         locked = not maxed and cost is None
         can_buy = cost is not None and cash >= cost
-        can_afford = can_buy or maxed
-        row_bg = (38, 48, 62) if can_buy or maxed else (34, 38, 46)
-        if locked:
-            row_bg = (36, 34, 42)
-        elif not can_buy and not maxed:
-            row_bg = (40, 36, 38)
-        pygame.draw.rect(screen, row_bg, rr, border_radius=6)
-        pygame.draw.rect(screen, (55, 65, 78), rr, 1, border_radius=6)
+        row_bg = _upgrade_row_fill(maxed, locked, can_buy)
+        _rounded_panel(screen, rr, row_bg, border=(55, 65, 78), border_radius=6)
         if maxed:
             price = "MAX"
         elif locked:
@@ -1067,72 +1178,47 @@ def draw_upgrade_panel(
         else:
             price = f"${cost}"
         hot = (150, 210, 255) if can_buy or maxed else ((100, 90, 110) if locked else (120, 100, 100))
-        draw_text(screen, font_small, f"[{key}]", rr.x + 8, rr.y + 8, hot)
-        draw_text(screen, font_small, f"{lane}", rr.x + 32, rr.y + 5, (130, 160, 190))
-        draw_text_fit(screen, font_small, name, rr.x + 32, rr.y + 15, rr.width - 130)
+        draw_text(screen, font_small, f"[{key}]", rr.x + 12, rr.y + 15, hot)
+        draw_text(screen, font_small, f"{lane}", rr.x + 40, rr.y + 13, (130, 160, 190))
+        draw_text_fit(screen, font_small, name, rr.x + 40, rr.y + 28, rr.width - 154)
         draw_text_fit(
             screen,
             font_small,
-            effect_text(stat, stat_val),
-            rr.x + 32,
-            rr.y + 29,
-            rr.width - 130,
+            format_path_upgrade_effect(stat, stat_val),
+            rr.x + 40,
+            rr.y + 46,
+            rr.width - 154,
             (150, 170, 188),
         )
-        price_col = (200, 210, 220) if can_buy or maxed else ((160, 140, 180) if locked else (180, 130, 130))
-        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.x + 116, rr.y + 7, price_col)
-        price_x = rr.right - 10 - font_small.size(price)[0]
-        draw_text(screen, font_small, price, price_x, rr.y + 7, price_col)
-        if cost is not None and cash < cost:
-            draw_text(screen, font_small, "!", rr.right - 14, rr.y + 7, (230, 120, 120))
-
-    pr = paragon_upgrade_rect(row_y, scroll_px)
-    if tower.paragon:
-        pygame.draw.rect(screen, (52, 44, 72), pr, border_radius=6)
-        pygame.draw.rect(screen, (210, 160, 255), pr, 2, border_radius=6)
-        draw_text(screen, font_small, "PARAGON", pr.x + 8, pr.y + 6, (235, 215, 255))
-        draw_text(screen, font_small, "Apex power — maxed", pr.x + 8, pr.y + 22, (175, 160, 195))
-    elif tower.can_paragon():
-        pc = tower.paragon_cost()
-        can_p = pc is not None and cash >= pc
-        pygame.draw.rect(screen, (48, 40, 78) if can_p else (36, 34, 42), pr, border_radius=6)
-        pygame.draw.rect(
-            screen,
-            (190, 130, 255) if can_p else (85, 72, 95),
-            pr,
-            2,
-            border_radius=6,
-        )
-        draw_text(screen, font_small, "[G] Paragon", pr.x + 8, pr.y + 6, (225, 195, 255))
-        if pc is not None:
-            draw_text(
+        unlocks = tower.modifier_unlocks_for_path(path_key)
+        if unlocks:
+            draw_text_fit(
                 screen,
                 font_small,
-                f"${pc}",
-                pr.x + 8,
-                pr.y + 22,
-                (210, 190, 235) if can_p else (145, 125, 155),
+                f"Unlocks: {', '.join(unlocks)}",
+                rr.x + 40,
+                rr.y + 64,
+                rr.width - 154,
+                (166, 205, 166),
             )
-    else:
-        pygame.draw.rect(screen, (32, 34, 40), pr, border_radius=6)
-        pygame.draw.rect(screen, (55, 60, 70), pr, 1, border_radius=6)
-        draw_text(
-            screen,
-            font_small,
-            "Paragon: max paths (6/2/2)",
-            pr.x + 8,
-            pr.y + 12,
-            (105, 115, 130),
-        )
+        price_col = (200, 210, 220) if can_buy or maxed else ((160, 140, 180) if locked else (180, 130, 130))
+        draw_text(screen, font_small, f"t{tier}/{MAX_PATH_TIER}", rr.right - 114, rr.y + 15, price_col)
+        price_x = rr.right - 14 - font_small.size(price)[0]
+        draw_text(screen, font_small, price, price_x, rr.y + 38, price_col)
+        if cost is not None and cash < cost:
+            draw_text(screen, font_small, "!", rr.right - 18, rr.y + 38, (230, 120, 120))
+
+    pr = paragon_upgrade_rect(row_y, scroll_px)
+    _draw_paragon_upgrade_slot(screen, font_small, pr, tower, cash)
     screen.set_clip(old_clip)
 
 
 def wave_panel_rects() -> tuple[pygame.Rect, pygame.Rect]:
     """Next wave button, maybe full panel."""
-    panel_w = 540
-    panel_h = 326
-    panel = pygame.Rect(PLAY_WIDTH // 2 - panel_w // 2, PLAY_HEIGHT // 2 - 140, panel_w, panel_h)
-    next_r = pygame.Rect(panel.centerx - 116, panel.bottom - 70, 232, 48)
+    panel_w = 640
+    panel_h = 392
+    panel = pygame.Rect(PLAY_WIDTH // 2 - panel_w // 2, PLAY_HEIGHT // 2 - 180, panel_w, panel_h)
+    next_r = pygame.Rect(panel.centerx - 126, panel.bottom - 78, 252, 52)
     return next_r, panel
 
 
@@ -1152,19 +1238,18 @@ def draw_wave_break(
     overlay.fill((8, 12, 18, 210))
     screen.blit(overlay, (0, 0))
     _, panel = wave_panel_rects()
-    pygame.draw.rect(screen, (24, 30, 40), panel, border_radius=12)
-    pygame.draw.rect(screen, COLOR_UI_ACCENT, panel, 2, border_radius=12)
+    _rounded_panel(screen, panel, (24, 30, 40), border=COLOR_UI_ACCENT, border_width=2, border_radius=12)
     cx = panel.centerx
     left = panel.x + 28
     right_pad = 28
     content_w = panel.width - (left - panel.x) - right_pad
-    draw_text_fit(screen, font_title, "Wave complete", cx - 90, panel.y + 20, 180)
+    draw_text_fit(screen, font_title, "Wave complete", cx - 100, panel.y + 24, 220)
     draw_text_fit(
         screen,
         font_small,
         "Endless · Mega-boss (regen) every 10th wave · extra ramp after wave 10",
         left,
-        panel.y + 58,
+        panel.y + 66,
         content_w,
         (150, 170, 190),
     )
@@ -1173,26 +1258,26 @@ def draw_wave_break(
         font_small,
         "Spend on global upgrades, then continue.",
         left,
-        panel.y + 82,
+        panel.y + 94,
         content_w,
         (170, 185, 200),
     )
-    pygame.draw.line(screen, (58, 72, 88), (panel.x + 24, panel.y + 110), (panel.right - 24, panel.y + 110), 1)
-    income_y = panel.y + 130
+    pygame.draw.line(screen, (58, 72, 88), (panel.x + 24, panel.y + 128), (panel.right - 24, panel.y + 128), 1)
+    income_y = panel.y + 152
     if wave_round_bonus or farm_income:
         draw_text_fit(
             screen,
             font_small,
             f"Income this round:  +${wave_round_bonus} wave  ·  +${farm_income} farms",
             left,
-            panel.y + 130,
+            panel.y + 152,
             content_w,
             (140, 200, 160),
         )
-        income_y = panel.y + 158
+        income_y = panel.y + 184
 
-    footer_text_y = panel.bottom - 90
-    footer_sep_y = panel.bottom - 98
+    footer_text_y = panel.bottom - 102
+    footer_sep_y = panel.bottom - 114
     y = income_y
     available_h = max(24, footer_sep_y - y - 8)
     row_gap = max(24, min(34, available_h // max(1, len(GLOBAL_UPGRADES))))

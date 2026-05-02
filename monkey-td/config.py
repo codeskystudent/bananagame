@@ -33,7 +33,7 @@ TITLE = "Monkey vs Bananas Tower Defense"
 START_FULLSCREEN = True
 
 # World layout (playfield excludes UI sidebar)
-SIDEBAR_WIDTH = max(300, min(460, int(WINDOW_WIDTH * 0.24)))
+SIDEBAR_WIDTH = max(260, min(360, int(WINDOW_WIDTH * 0.2)))
 PLAY_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH
 PLAY_HEIGHT = WINDOW_HEIGHT
 
@@ -701,7 +701,10 @@ HP_SPEED_CURVE = 0.24
 HP_SPEED_MULT_MIN = 0.74
 HP_SPEED_MULT_MAX = 1.36
 
-# Tower attack types — used for lead / metal rules (explosive & ballistic always hurt lead)
+# Sniper: camo / flying / lead / regen handling unlocks when max(path tiers) reaches this.
+SNIPER_SPECIAL_TIER = 3
+
+# Tower attack types — used for lead / metal rules (explosive & plasma pop lead without Sniper upgrades)
 TOWER_DAMAGE_TYPE: dict[str, str] = {
     "dart": "sharp",
     "cannon": "explosive",
@@ -742,12 +745,13 @@ DIFFICULTY_SETTINGS: dict[str, dict[str, float | str]] = {
     },
     "impossible": {
         "label": "Impossible",
-        "enemy_hp": 1.34,
-        "enemy_speed": 1.14,
-        "starting_cash_mult": 0.85,
-        "leak_mult": 1.28,
-        "reward_mult": 0.86,
-        "wave_bonus_mult": 0.82,
+        # Slightly softer than pre-buff impossible — still clearly above Hard.
+        "enemy_hp": 1.28,
+        "enemy_speed": 1.10,
+        "starting_cash_mult": 0.89,
+        "leak_mult": 1.22,
+        "reward_mult": 0.89,
+        "wave_bonus_mult": 0.85,
     },
 }
 

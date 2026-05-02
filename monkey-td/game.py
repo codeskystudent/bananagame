@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import math
+import struct
+import wave
 from typing import Literal
 
 import pygame
@@ -55,14 +58,17 @@ from entities import (
     apply_projectile_hit,
     enemy_reward_multiplier,
     find_target,
+    tower_can_see_camo_with_villages,
+    village_regen_damage_mult_for_tower,
 )
 from maps import MAP_DEFINITIONS, build_waypoints, map_count, map_grass
 from path import distance_point_to_path, segment_lengths, total_length
 from waves import WaveController, make_enemy
 from ui import (
     HUD_SPEED_CHOICES,
+    SIDEBAR_PAD_X,
     UPGRADE_PANEL_Y0,
-    UPGRADE_PATHS_ROW_Y,
+    compute_upgrade_paths_row_y,
     difficulty_button_rect,
     draw_hud,
     draw_map_select,
@@ -100,6 +106,14 @@ class Game:
         self.clock = pygame.time.Clock()
         self.font, self.font_small, self.font_title = init_fonts()
         self.sim_accum_ms = 0.0
+        self.sfx_enabled = False
+        self._sfx_shot_cd = 0
+        self._sfx_pop_cd = 0
+        self.sfx_shot_light: pygame.mixer.Sound | None = None
+        self.sfx_shot_heavy: pygame.mixer.Sound | None = None
+        self.sfx_pop_soft: pygame.mixer.Sound | None = None
+        self.sfx_pop_moab: pygame.mixer.Sound | None = None
+        self._init_audio()
 
         self.state: State = "map_select"
         self.paused = False
@@ -142,6 +156,70 @@ class Game:
         self.wave_speed_mult = 1.0
         self.last_wave_round_bonus = 0
         self.last_farm_income = 0
+
+    def _make_tone_sound(
+        self,
+        freq_hz: float,
+        duration_ms: int,
+        volume: float = 0.12,
+        *,
+        decay: float = 4.0,
+        sample_rate: int = 22050,
+    ) -> pygame.mixer.Sound:
+        n = max(8, int(sample_rate * duration_ms / 1000))
+        amp = int(32767 * max(0.0, min(1.0, volume)))
+        frames = bytearray()
+        for i in range(n):
+            t = i / sample_rate
+            env = math.exp(-decay * t)
+            s = math.sin(2.0 * math.pi * freq_hz * t)
+            v = int(amp * env * s)
+            frames.extend(struct.pack("<h", v))
+        with io.BytesIO() as bio:
+            with wave.open(bio, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(bytes(frames))
+            data = bio.getvalue()
+        return pygame.mixer.Sound(buffer=data)
+
+    def _init_audio(self) -> None:
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=256)
+            self.sfx_shot_light = self._make_tone_sound(880, 26, 0.07, decay=8.0)
+            self.sfx_shot_heavy = self._make_tone_sound(420, 36, 0.08, decay=6.0)
+            self.sfx_pop_soft = self._make_tone_sound(1180, 22, 0.06, decay=12.0)
+            self.sfx_pop_moab = self._make_tone_sound(220, 62, 0.07, decay=5.5)
+            self.sfx_enabled = True
+        except Exception:
+            self.sfx_enabled = False
+
+    def _play_shot_sfx(self, tower_type: str) -> None:
+        if not self.sfx_enabled:
+            return
+        if self._sfx_shot_cd > 0:
+            return
+        snd = self.sfx_shot_light
+        if tower_type in ("cannon", "sniper", "super"):
+            snd = self.sfx_shot_heavy
+        if snd is not None:
+            snd.play()
+        self._sfx_shot_cd = 2
+
+    def _play_pop_sfx(self, popped_count: int, moab_popped: bool) -> None:
+        if not self.sfx_enabled:
+            return
+        if self._sfx_pop_cd > 0:
+            return
+        if moab_popped and self.sfx_pop_moab is not None:
+            self.sfx_pop_moab.play()
+            self._sfx_pop_cd = 3
+            return
+        if popped_count > 0 and self.sfx_pop_soft is not None:
+            self.sfx_pop_soft.play()
+            self._sfx_pop_cd = 2
 
     def select_map(self, index: int) -> None:
         self.map_index = index
@@ -232,20 +310,18 @@ class Game:
     def reset_game(self) -> None:
         self.return_to_title()
 
+    def _global_upgrade_effect(self, upgrade_id: str) -> float:
+        return next(g["effect"] for g in GLOBAL_UPGRADES if g["id"] == upgrade_id)
+
     def global_range_pct(self) -> float:
-        t = self.global_tiers.get("range", 0)
-        eff = next(g["effect"] for g in GLOBAL_UPGRADES if g["id"] == "range")
-        return t * eff
+        return self.global_tiers.get("range", 0) * self._global_upgrade_effect("range")
 
     def global_damage_pct(self) -> float:
-        t = self.global_tiers.get("damage", 0)
-        eff = next(g["effect"] for g in GLOBAL_UPGRADES if g["id"] == "damage")
-        return t * eff
+        return self.global_tiers.get("damage", 0) * self._global_upgrade_effect("damage")
 
     def kill_cash_mult(self) -> float:
         t = self.global_tiers.get("income", 0)
-        eff = next(g["effect"] for g in GLOBAL_UPGRADES if g["id"] == "income")
-        return 1.0 + t * eff
+        return 1.0 + t * self._global_upgrade_effect("income")
 
     def support_buff_multipliers(self, t: MonkeyTower) -> tuple[float, float]:
         """Extra range / damage multipliers from nearby Monkey Village & Workshop auras."""
@@ -334,9 +410,13 @@ class Game:
 
     def _cull_dead_enemies(self) -> None:
         new: list = []
+        popped_count = 0
+        moab_popped = False
         for e in self.enemies:
             if e.hp <= 0 and not e.leaked:
+                popped_count += 1
                 if e.kind == "moab":
+                    moab_popped = True
                     # MOAB-style pop: release a burst of children.
                     for _ in range(6):
                         c = make_enemy("fast", self.wave_hp_mult, self.wave_speed_mult, 0, boss_decade=0)
@@ -359,8 +439,14 @@ class Game:
             else:
                 new.append(e)
         self.enemies = new
+        self._play_pop_sfx(popped_count, moab_popped)
 
     def _tick_one(self) -> None:
+        if self._sfx_shot_cd > 0:
+            self._sfx_shot_cd -= 1
+        if self._sfx_pop_cd > 0:
+            self._sfx_pop_cd -= 1
+
         if self.run_mode != "sandbox" and self.waves.active and self.waves.update_spawn_timer():
             popped = self.waves.pop_spawn()
             if popped:
@@ -420,6 +506,7 @@ class Game:
 
         self.sync_enemy_positions()
         support_towers = [s for s in self.towers if s.is_support()]
+        villages = [s for s in support_towers if s.tower_type == "village"]
         gr = self.global_range_pct()
         support_data: list[tuple[float, float, float, float, float]] = []
         for s in support_towers:
@@ -453,7 +540,7 @@ class Game:
                 t.y,
                 rng,
                 self.enemies,
-                t.can_detect_camo(),
+                tower_can_see_camo_with_villages(t, villages, gr),
                 t.can_detect_flying(),
             )
             if tgt is None:
@@ -478,6 +565,7 @@ class Game:
                 tier_b=t.tier_b,
                 tier_c=t.tier_c,
                 paragon=t.paragon,
+                regen_village_mult=village_regen_damage_mult_for_tower(t, villages, gr),
                 speed=(
                     0.55
                     if t.tower_type == "sniper"
@@ -487,6 +575,7 @@ class Game:
                 ),
             )
             self.projectiles.append(proj)
+            self._play_shot_sfx(t.tower_type)
             t.cooldown = t.effective_cooldown()
 
     def try_paragon(self) -> None:
@@ -682,8 +771,8 @@ class Game:
 
     def max_sidebar_scroll(self) -> int:
         # Scroll only the build list region (above upgrades panel).
-        content_top = 82
-        view_bottom = UPGRADE_PANEL_Y0 - 8
+        content_top = 90
+        view_bottom = UPGRADE_PANEL_Y0 - 14
         view_h = max(1, view_bottom - content_top)
         build_bottom = tower_button_rect(len(TOWER_SHOP_ORDER) - 1, 0).bottom + 8
         content_h = max(0, build_bottom - content_top)
@@ -774,15 +863,15 @@ class Game:
         )
         draw_play_border(self.screen)
         draw_sidebar_bg(self.screen)
-        sx = PLAY_WIDTH + 12
-        sw = SIDEBAR_WIDTH - 24
-        draw_text_fit(self.screen, self.font_title, "Monkey TD", sx, 10, sw, (120, 185, 255))
+        sx = PLAY_WIDTH + SIDEBAR_PAD_X
+        sw = SIDEBAR_WIDTH - 2 * SIDEBAR_PAD_X
+        draw_text_fit(self.screen, self.font_title, "Monkey TD", sx, 12, sw, (120, 185, 255))
         draw_text_fit(
             self.screen,
             self.font_small,
             MAP_DEFINITIONS[self.map_index]["name"],
             sx,
-            34,
+            38,
             sw,
             (140, 160, 185),
         )
@@ -791,7 +880,7 @@ class Game:
             self.font_small,
             str(DIFFICULTY_SETTINGS[self.difficulty]["label"]),
             sx,
-            50,
+            56,
             sw,
             (120, 175, 140),
         )
@@ -800,7 +889,7 @@ class Game:
             self.font_small,
             f"Mode: {self.run_mode.capitalize()}",
             sx,
-            66,
+            74,
             sw,
             (150, 188, 220),
         )
@@ -893,7 +982,7 @@ class Game:
                 if sell_tower_button_rect(0).collidepoint(mx, my):
                     self.try_sell_selected_tower()
                     return
-                row_y = UPGRADE_PATHS_ROW_Y
+                row_y = compute_upgrade_paths_row_y(self.font_small)
                 for path, idx in (("a", 0), ("b", 1), ("c", 2)):
                     if upgrade_row_rect(row_y, idx, 0).collidepoint(mx, my):
                         self.try_upgrade(path)
@@ -1011,7 +1100,7 @@ class Game:
                     self.handle_click(event.pos[0], event.pos[1])
                 elif event.type == pygame.MOUSEWHEEL:
                     mx, my = pygame.mouse.get_pos()
-                    if mx >= PLAY_WIDTH and 82 <= my <= UPGRADE_PANEL_Y0 - 8:
+                    if mx >= PLAY_WIDTH and 92 <= my <= UPGRADE_PANEL_Y0 - 14:
                         self.sidebar_scroll -= event.y * 28
                         self.clamp_sidebar_scroll()
                 elif event.type == pygame.KEYDOWN:

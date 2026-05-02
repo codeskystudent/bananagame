@@ -30,6 +30,8 @@ from config import (
     REGEN_HP_PER_FRAME,
     SELL_REFUND_MULT,
     TOWER_PATH_TIER_NAMES,
+    SNIPER_SPECIAL_TIER,
+    TOWER_DAMAGE_TYPE,
     TOWER_PATH_UPGRADES,
     TOWER_TYPES,
     UPGRADE_COST_BASE_PATH,
@@ -48,36 +50,63 @@ def _path_bonus(tower_type: str, tier_a: int, tier_b: int, tier_c: int, stat: st
     return s
 
 
-_TOWER_MODIFIER_ACCESS: dict[str, set[str]] = {
-    # Certain towers intentionally lack some special-modifier capabilities.
-    "dart": {"lead", "camo", "flying"},
-    "cannon": {"lead", "flying"},
-    "ice": {"camo", "regen"},
-    "sniper": {"lead", "camo", "flying"},
-    "boom": {"lead", "regen"},
-    "super": {"lead", "camo", "flying", "regen"},
-}
+def _sniper_path_lead_unlocked(tier_a: int) -> bool:
+    """Top path: pop lead (ballistic)."""
+    return tier_a >= SNIPER_SPECIAL_TIER
 
 
-def _single_modifier_for_tiers(
-    tower_type: str, tier_a: int, tier_b: int, tier_c: int
-) -> str | None:
-    """Only one special modifier can be active at a time per tower."""
-    allowed = _TOWER_MODIFIER_ACCESS.get(tower_type, set())
-    if not allowed:
-        return None
-    m = max(tier_a, tier_b, tier_c)
-    if m <= 0:
-        return None
-    if tier_a == m and m >= 2 and "lead" in allowed:
-        return "lead"
-    if tier_b == m and m >= 4 and "flying" in allowed:
-        return "flying"
-    if tier_b == m and m >= 2 and "camo" in allowed:
-        return "camo"
-    if tier_c == m and m >= 2 and "regen" in allowed:
-        return "regen"
-    return None
+def _sniper_path_camo_unlocked(tier_b: int) -> bool:
+    """Middle path: camo detection."""
+    return tier_b >= SNIPER_SPECIAL_TIER
+
+
+def _sniper_path_flying_unlocked(tier_c: int) -> bool:
+    """Bottom path: flying targeting."""
+    return tier_c >= SNIPER_SPECIAL_TIER
+
+
+def village_grants_ally_camo_aura(v: MonkeyTower) -> bool:
+    return v.tower_type == "village" and v.tier_b >= SNIPER_SPECIAL_TIER
+
+
+def village_grants_ally_regen_aura(v: MonkeyTower) -> bool:
+    """Bottom-path village: allies in range deal bonus damage vs regen bloons."""
+    return v.tower_type == "village" and v.tier_c >= SNIPER_SPECIAL_TIER
+
+
+def tower_can_see_camo_with_villages(
+    tower: MonkeyTower,
+    village_towers: list[MonkeyTower],
+    global_range_pct: float,
+) -> bool:
+    """Camo: Sniper middle path, or Monkey Village middle-path aura."""
+    if tower.can_detect_camo():
+        return True
+    for v in village_towers:
+        if not village_grants_ally_camo_aura(v):
+            continue
+        dx, dy = v.x - tower.x, v.y - tower.y
+        r = v.effective_range(global_range_pct)
+        if dx * dx + dy * dy <= r * r:
+            return True
+    return False
+
+
+def village_regen_damage_mult_for_tower(
+    tower: MonkeyTower,
+    village_towers: list[MonkeyTower],
+    global_range_pct: float,
+) -> float:
+    """While in a Village bottom-path aura, bonus damage vs regen layers (stacks best single aura)."""
+    m = 1.0
+    for v in village_towers:
+        if not village_grants_ally_regen_aura(v):
+            continue
+        dx, dy = v.x - tower.x, v.y - tower.y
+        r = v.effective_range(global_range_pct)
+        if dx * dx + dy * dy <= r * r:
+            m = max(m, 1.07)
+    return m
 
 
 @dataclass
@@ -213,6 +242,7 @@ class Projectile:
     tier_b: int = 0
     tier_c: int = 0
     paragon: bool = False
+    regen_village_mult: float = 1.0
     t: float = 0.0
     speed: float = 0.22  # 0..1 per frame
     done: bool = False
@@ -354,38 +384,55 @@ class MonkeyTower:
         return {"a": self.tier_a, "b": self.tier_b, "c": self.tier_c}[p]
 
     def can_detect_camo(self) -> bool:
-        """Single-modifier model: only dominant path grants one special."""
+        """Sniper middle path (tier 3+): camo. Village aura handled in targeting."""
         if self.paragon:
             return True
-        return (
-            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
-            == "camo"
-        )
+        if self.tower_type != "sniper":
+            return False
+        return _sniper_path_camo_unlocked(self.tier_b)
 
     def can_detect_flying(self) -> bool:
-        """Single-modifier model: only one special can be active."""
+        """Sniper bottom path (tier 3+): flying."""
         if self.paragon:
             return True
-        return (
-            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
-            == "flying"
-        )
+        if self.tower_type != "sniper":
+            return False
+        return _sniper_path_flying_unlocked(self.tier_c)
 
     def can_hit_lead(self) -> bool:
+        """Sniper top path (tier 3+) vs lead; Cannon/Super use damage type."""
         if self.paragon:
             return True
-        return (
-            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
-            == "lead"
-        )
+        if self.tower_type == "sniper":
+            return _sniper_path_lead_unlocked(self.tier_a)
+        dt = TOWER_DAMAGE_TYPE.get(self.tower_type, "sharp")
+        return dt in ("explosive", "plasma")
 
     def can_hit_regen(self) -> bool:
+        """Regen bloons take damage from everyone; they heal over time separately."""
+        return True
+
+    def modifier_unlocks_for_path(self, path: str) -> list[str]:
+        """Sniper: one bloon layer per path. Village: ally camo / anti-regen auras."""
+        if self.tower_type == "village":
+            if path == "b" and self.tier_b < SNIPER_SPECIAL_TIER:
+                return [f"Ally camo vision @ tier {SNIPER_SPECIAL_TIER}+ (Middle)"]
+            if path == "c" and self.tier_c < SNIPER_SPECIAL_TIER:
+                return [f"Ally vs-regen damage @ tier {SNIPER_SPECIAL_TIER}+ (Bottom)"]
+            return []
+        if self.tower_type != "sniper":
+            return []
         if self.paragon:
-            return True
-        return (
-            _single_modifier_for_tiers(self.tower_type, self.tier_a, self.tier_b, self.tier_c)
-            == "regen"
-        )
+            return []
+        spec = {
+            "a": ("Lead pop", self.tier_a, _sniper_path_lead_unlocked),
+            "b": ("Camo detection", self.tier_b, _sniper_path_camo_unlocked),
+            "c": ("Flying targeting", self.tier_c, _sniper_path_flying_unlocked),
+        }
+        label, tier, unlocked_fn = spec[path]
+        if unlocked_fn(tier):
+            return []
+        return [f"{label} @ tier {SNIPER_SPECIAL_TIER}+ on this path"]
 
     def display_name(self) -> str:
         """BTD-style full tower name from the leading upgrade path."""
@@ -472,27 +519,15 @@ class MonkeyTower:
 
 
 def lead_damage_multiplier(
-    tower_type: str, tier_a: int, _tier_b: int, tier_c: int, damage_type: str
+    tower_type: str, tier_a: int, tier_b: int, tier_c: int, damage_type: str
 ) -> float:
-    """Single-modifier model: lead comes only from dominant A path."""
-    _ = tower_type, damage_type, tier_c
-    return (
-        1.0
-        if _single_modifier_for_tiers(tower_type, tier_a, _tier_b, tier_c) == "lead"
-        else 0.0
-    )
-
-
-def regen_damage_multiplier(
-    tower_type: str, tier_a: int, tier_b: int, tier_c: int, _damage_type: str
-) -> float:
-    """Single-modifier model: regen comes only from dominant C path."""
-    _ = tower_type, _damage_type
-    return (
-        1.0
-        if _single_modifier_for_tiers(tower_type, tier_a, tier_b, tier_c) == "regen"
-        else 0.0
-    )
+    """Lead layer: explosive/plasma always; Sniper needs top path tier 3+."""
+    _ = tier_b, tier_c
+    if tower_type == "sniper":
+        return 1.0 if _sniper_path_lead_unlocked(tier_a) else 0.0
+    if damage_type in ("explosive", "plasma"):
+        return 1.0
+    return 0.0
 
 
 def damage_vs_enemy(
@@ -512,11 +547,6 @@ def damage_vs_enemy(
             pass
         else:
             d *= lead_damage_multiplier(tower_type, tier_a, tier_b, tier_c, damage_type)
-    if enemy.regen:
-        if paragon:
-            pass
-        else:
-            d *= regen_damage_multiplier(tower_type, tier_a, tier_b, tier_c, damage_type)
     return d
 
 
@@ -592,6 +622,8 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
                 proj.damage_type,
                 paragon=proj.paragon,
             )
+            if best.regen:
+                d *= proj.regen_village_mult
             if d > 0:
                 best.apply_damage(d)
                 if proj.slow_pct > 0:
@@ -614,6 +646,8 @@ def apply_projectile_hit(proj: Projectile, enemies: list[Enemy]) -> None:
                     proj.damage_type,
                     paragon=proj.paragon,
                 )
+                if e.regen:
+                    d *= proj.regen_village_mult
                 if d > 0:
                     e.apply_damage(d)
                     if proj.slow_pct > 0:
